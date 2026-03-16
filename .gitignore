@@ -1,0 +1,9 @@
+.env
+node_modules/
+data/
+dist/
+service-llm/config.yaml
+*.log
+.DS_Store
+Thumbs.db
+package-lock.json

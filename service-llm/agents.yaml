@@ -1,0 +1,40 @@
+# Конфигурация агентов для SGR Deep Research
+# ============================================
+
+agents:
+  # Агент для глубокого исследования русскоязычных сайтов
+  russian_deep_research_agent:
+    base_class: "SGRToolCallingAgent"
+    
+    # Настройки LLM
+    llm:
+      model: "qwen3-30b-a3b-instruct-2507"
+      temperature: 0.2
+      max_tokens: 8000
+    
+    # Настройки поиска - увеличены для более глубокого исследования
+    search:
+      max_results: 15  # Больше результатов для тщательного анализа
+      max_searches: 6  # Больше поисковых запросов
+      content_limit: 2000  # Увеличенный лимит для детального анализа
+    
+    # Настройки выполнения
+    execution:
+      max_steps: 12  # Больше шагов для глубокого исследования
+      max_iterations: 15  # Больше итераций
+      max_clarifications: 4  # Возможность уточнять детали
+      mcp_context_limit: 20000
+      logs_dir: "logs/"
+      reports_dir: "reports/"
+    
+    # Промпты агента - используем дефолтные файлы из папки prompts
+    prompts:
+      system_prompt_file: "sgr_agent_core/prompts/system_prompt.txt"
+      initial_user_request_file: "sgr_agent_core/prompts/initial_user_request.txt"
+    
+    # Инструменты, которые может использовать агент
+    tools:
+      - "WebSearchTool"
+      - "ExtractPageContentTool"
+      - "FinalAnswerTool"
+      - "ReasoningTool"

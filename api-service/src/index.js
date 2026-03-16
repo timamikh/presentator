@@ -1,0 +1,26 @@
+const express = require('express');
+const cors = require('cors');
+const config = require('./config');
+const authRouter = require('./routes/auth');
+const jobsRouter = require('./routes/jobs');
+
+const app = express();
+
+app.use(cors());
+app.use(express.json());
+
+app.get('/health', (_req, res) => {
+  res.json({ status: 'ok' });
+});
+
+app.use('/api/auth', authRouter);
+app.use('/api/jobs', jobsRouter);
+
+app.use((err, _req, res, _next) => {
+  console.error('Unhandled error:', err.message);
+  res.status(500).json({ error: 'Internal server error' });
+});
+
+app.listen(config.port, () => {
+  console.log(`API Service running on port ${config.port}`);
+});

@@ -1,0 +1,30 @@
+# SGR Deep Research Agent - Configuration Template
+# Copy this file to config.yaml and fill in your data
+
+# LLM Configuration
+llm:
+  api_key: "CHANGE_ME"
+  base_url: "http://your-llm-host:port/v1"
+  model: "your-model-name"
+  max_tokens: 8000
+  temperature: 0.2
+
+# Search Configuration (Tavily)
+search:
+  tavily_api_key: "CHANGE_ME"
+  tavily_api_base_url: "https://api.tavily.com"
+  max_searches: 4
+  max_results: 10
+  content_limit: 1500
+
+# Execution Settings
+execution:
+  max_clarifications: 3
+  max_iterations: 25
+  mcp_context_limit: 15000
+  logs_dir: "logs"
+  reports_dir: "reports"
+  enable_streaming: false
+  track_token_usage: true
+
+agents: {}

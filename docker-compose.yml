@@ -1,0 +1,128 @@
+services:
+  # -----------------------------------------------
+  # PostgreSQL — единая БД (со схемами n8n / presentator)
+  # -----------------------------------------------
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./init-db:/docker-entrypoint-initdb.d
+    networks:
+      - presentator-net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # -----------------------------------------------
+  # n8n — Workflow Engine (оркестратор пайплайна)
+  # -----------------------------------------------
+  n8n:
+    image: n8nio/n8n:latest
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      - N8N_HOST=${N8N_HOST}
+      - N8N_PORT=${N8N_PORT}
+      - N8N_PROTOCOL=${N8N_PROTOCOL}
+      - N8N_PATH=${N8N_PATH}
+      - WEBHOOK_URL=${WEBHOOK_URL}
+      - DB_TYPE=${N8N_DB_TYPE}
+      - DB_POSTGRESDB_HOST=${N8N_DB_POSTGRESDB_HOST}
+      - DB_POSTGRESDB_PORT=${N8N_DB_POSTGRESDB_PORT}
+      - DB_POSTGRESDB_DATABASE=${N8N_DB_POSTGRESDB_DATABASE}
+      - DB_POSTGRESDB_USER=${N8N_DB_POSTGRESDB_USER}
+      - DB_POSTGRESDB_PASSWORD=${N8N_DB_POSTGRESDB_PASSWORD}
+      - DB_POSTGRESDB_SCHEMA=${N8N_DB_POSTGRESDB_SCHEMA}
+      - INTERNAL_API_KEY=${INTERNAL_API_KEY}
+      - LLM_API_KEY=${LLM_API_KEY}
+      - LLM_BASE_URL=${LLM_BASE_URL}
+      - LLM_MODEL=${LLM_MODEL}
+    volumes:
+      - n8n_data:/home/node/.n8n
+      - shared_data:/data
+    networks:
+      - presentator-net
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  # -----------------------------------------------
+  # API Service — Node.js бэкенд
+  # -----------------------------------------------
+  api-service:
+    build: ./api-service
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      - PORT=3001
+      - JWT_SECRET=${JWT_SECRET}
+      - INTERNAL_API_KEY=${INTERNAL_API_KEY}
+      - SEED_USER_EMAIL=${SEED_USER_EMAIL}
+      - SEED_USER_PASSWORD=${SEED_USER_PASSWORD}
+      - N8N_WEBHOOK_URL=${N8N_WEBHOOK_URL}
+      - POSTGRES_USER=${POSTGRES_USER}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+      - POSTGRES_DB=${POSTGRES_DB}
+      - POSTGRES_PORT=${POSTGRES_PORT}
+    volumes:
+      - shared_data:/data
+    networks:
+      - presentator-net
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  # -----------------------------------------------
+  # Converter Service — HTML/JSON -> PPTX
+  # -----------------------------------------------
+  converter-service:
+    build: ./converter-service
+    restart: unless-stopped
+    volumes:
+      - shared_data:/data
+    networks:
+      - presentator-net
+
+  # -----------------------------------------------
+  # Frontend — Vue 3 SPA
+  # -----------------------------------------------
+  frontend:
+    build: ./frontend
+    restart: unless-stopped
+    networks:
+      - presentator-net
+
+  # -----------------------------------------------
+  # Nginx — Gateway / Reverse Proxy
+  # -----------------------------------------------
+  nginx:
+    image: nginx:1.25-alpine
+    restart: unless-stopped
+    ports:
+      - "${NGINX_PORT:-80}:80"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+    networks:
+      - presentator-net
+    depends_on:
+      - n8n
+      - api-service
+      - converter-service
+      - frontend
+
+volumes:
+  postgres_data:
+  n8n_data:
+  shared_data:
+
+networks:
+  presentator-net:
+    driver: bridge

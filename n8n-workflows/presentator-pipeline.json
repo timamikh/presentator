@@ -1,0 +1,302 @@
+{
+  "id": "pres001",
+  "name": "Presentator Pipeline",
+  "nodes": [
+    {
+      "parameters": {
+        "path": "presentator-pipeline",
+        "httpMethod": "POST",
+        "responseMode": "onReceived",
+        "options": {}
+      },
+      "id": "f8a3b2c1-4e5d-4a6b-9c8d-1a2b3c4d5e6f",
+      "name": "Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1.1,
+      "position": [250, 300],
+      "webhookId": "e1f2a3b4-5c6d-4e7f-8091-e1f2a3b4c5d6"
+    },
+    {
+      "parameters": {
+        "method": "PATCH",
+        "url": "=http://api-service:3001/api/jobs/internal/{{ $json.body.jobId }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-Internal-Key",
+              "value": "={{ $json.body._secrets.internalApiKey }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "{\"status\": \"processing\"}",
+        "options": {}
+      },
+      "id": "a1b2c3d4-5e6f-4a7b-8c9d-a1b2c3d4e5f6",
+      "name": "Update Status to Processing",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [500, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "const input = $input.first().json;\nconst webhookData = $('Webhook').first().json.body;\nconst prompt = webhookData.prompt;\nconst filePaths = webhookData.filePaths || [];\nconst jobId = webhookData.jobId;\nconst secrets = webhookData._secrets || {};\n\nconst systemPrompt = `You are a presentation designer. You receive a user's request and must generate a structured JSON for a presentation.\n\nOutput ONLY valid JSON (no markdown, no code fences) with this exact structure:\n{\n  \"slides\": [\n    {\n      \"layout\": \"title|content|section|image|two_column\",\n      \"title\": \"Slide title\",\n      \"subtitle\": \"Optional subtitle (title layout only)\",\n      \"body\": [\"Bullet 1\", \"Bullet 2\"],\n      \"image\": \"/data/uploads/job_ID/filename.ext\",\n      \"leftContent\": [\"Left col items\"],\n      \"rightContent\": [\"Right col items\"],\n      \"notes\": \"Speaker notes\"\n    }\n  ],\n  \"theme\": {\n    \"primaryColor\": \"#hex\",\n    \"fontFamily\": \"Font Name\"\n  }\n}\n\nRules:\n- First slide should be \"title\" layout\n- Use 5-10 slides for a typical presentation\n- Body arrays should have 3-5 bullet points\n- Only reference images from the provided file paths\n- Make content professional and well-structured\n- Respond in the same language as the user's prompt`;\n\nlet userMessage = prompt;\nif (filePaths.length > 0) {\n  userMessage += '\\n\\nAvailable files:\\n' + filePaths.map(f => '- ' + f).join('\\n');\n}\n\nreturn [{ json: { systemPrompt, userMessage, jobId, secrets } }];"
+      },
+      "id": "b2c3d4e5-6f7a-4b8c-9d0e-b2c3d4e5f6a7",
+      "name": "Build LLM Prompt",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [750, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $json.secrets.llmBaseUrl }}/chat/completions",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $json.secrets.llmApiKey }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ model: $json.secrets.llmModel, messages: [{ role: 'system', content: $json.systemPrompt }, { role: 'user', content: $json.userMessage }], max_tokens: 8000, temperature: 0.3 }) }}",
+        "options": {
+          "timeout": 120000
+        }
+      },
+      "id": "c3d4e5f6-7a8b-4c9d-0e1f-c3d4e5f6a7b8",
+      "name": "Call LLM API",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1000, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "const input = $input.first().json;\nconst jobId = $('Build LLM Prompt').first().json.jobId;\nconst secrets = $('Build LLM Prompt').first().json.secrets;\n\nlet content = '';\ntry {\n  content = input.choices[0].message.content;\n} catch(e) {\n  content = JSON.stringify(input);\n}\n\nif (content.includes('```')) {\n  content = content.replace(/```json\\s*/g, '').replace(/```\\s*/g, '').trim();\n}\n\nlet slideData;\ntry {\n  slideData = JSON.parse(content);\n} catch (e) {\n  slideData = {\n    slides: [{\n      layout: 'title',\n      title: 'Error',\n      subtitle: 'Failed to parse LLM response: ' + e.message\n    }],\n    theme: { primaryColor: '#dc2626' }\n  };\n}\n\nreturn [{ json: { slideData, jobId, secrets } }];"
+      },
+      "id": "d4e5f6a7-8b9c-4d0e-1f2a-d4e5f6a7b8c9",
+      "name": "Parse LLM Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1250, 300]
+    },
+    {
+      "parameters": {
+        "method": "PATCH",
+        "url": "=http://api-service:3001/api/jobs/internal/{{ $json.jobId }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-Internal-Key",
+              "value": "={{ $json.secrets.internalApiKey }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ status: 'processing', slideData: $json.slideData }) }}",
+        "options": {}
+      },
+      "id": "e5f6a7b8-9c0d-4e1f-2a3b-e5f6a7b8c9d0",
+      "name": "Save Slide Data",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1500, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://converter-service:3002/convert",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ slideData: $('Parse LLM Response').first().json.slideData, outputPath: '/data/results/' + $('Parse LLM Response').first().json.jobId + '/presentation.pptx' }) }}",
+        "options": {}
+      },
+      "id": "f6a7b8c9-0d1e-4f2a-3b4c-f6a7b8c9d0e1",
+      "name": "Call Converter",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1750, 300]
+    },
+    {
+      "parameters": {
+        "method": "PATCH",
+        "url": "=http://api-service:3001/api/jobs/internal/{{ $('Parse LLM Response').first().json.jobId }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-Internal-Key",
+              "value": "={{ $('Parse LLM Response').first().json.secrets.internalApiKey }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ status: 'done', resultPath: '/data/results/' + $('Parse LLM Response').first().json.jobId + '/presentation.pptx' }) }}",
+        "options": {}
+      },
+      "id": "a7b8c9d0-1e2f-4a3b-4c5d-a7b8c9d0e1f2",
+      "name": "Update Status Done",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [2000, 300]
+    },
+    {
+      "parameters": {},
+      "id": "b8c9d0e1-2f3a-4b4c-5d6e-b8c9d0e1f2a3",
+      "name": "Error Trigger",
+      "type": "n8n-nodes-base.errorTrigger",
+      "typeVersion": 1,
+      "position": [250, 600]
+    },
+    {
+      "parameters": {
+        "jsCode": "const errorData = $input.first().json;\nlet errorMessage = 'Unknown error occurred in pipeline';\nlet jobId = null;\nlet internalApiKey = null;\n\ntry {\n  if (errorData.execution && errorData.execution.error) {\n    errorMessage = errorData.execution.error.message || errorMessage;\n  }\n} catch (e) {}\n\ntry {\n  const runData = errorData.execution.data.resultData.runData;\n  if (runData['Webhook']) {\n    const webhookOutput = runData['Webhook'][0].data.main[0][0].json.body;\n    jobId = webhookOutput.jobId;\n    internalApiKey = webhookOutput._secrets ? webhookOutput._secrets.internalApiKey : null;\n  }\n} catch (e) {}\n\nif (!jobId) {\n  try {\n    const runData = errorData.execution.data.resultData.runData;\n    if (runData['Build LLM Prompt']) {\n      const bld = runData['Build LLM Prompt'][0].data.main[0][0].json;\n      jobId = bld.jobId;\n      internalApiKey = bld.secrets ? bld.secrets.internalApiKey : null;\n    }\n  } catch (e) {}\n}\n\nreturn [{ json: { jobId, errorMessage, internalApiKey } }];"
+      },
+      "id": "c9d0e1f2-3a4b-4c5d-6e7f-c9d0e1f2a3b4",
+      "name": "Extract Error Info",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [500, 600]
+    },
+    {
+      "parameters": {
+        "method": "PATCH",
+        "url": "=http://api-service:3001/api/jobs/internal/{{ $json.jobId }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-Internal-Key",
+              "value": "={{ $json.internalApiKey }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ status: 'error', errorMessage: $json.errorMessage }) }}",
+        "options": {}
+      },
+      "id": "d0e1f2a3-4b5c-4d6e-7f80-d0e1f2a3b4c5",
+      "name": "Update Status Error",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [750, 600],
+      "onError": "continueRegularOutput"
+    }
+  ],
+  "connections": {
+    "Webhook": {
+      "main": [
+        [
+          {
+            "node": "Update Status to Processing",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Update Status to Processing": {
+      "main": [
+        [
+          {
+            "node": "Build LLM Prompt",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build LLM Prompt": {
+      "main": [
+        [
+          {
+            "node": "Call LLM API",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Call LLM API": {
+      "main": [
+        [
+          {
+            "node": "Parse LLM Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse LLM Response": {
+      "main": [
+        [
+          {
+            "node": "Save Slide Data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Save Slide Data": {
+      "main": [
+        [
+          {
+            "node": "Call Converter",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Call Converter": {
+      "main": [
+        [
+          {
+            "node": "Update Status Done",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Error Trigger": {
+      "main": [
+        [
+          {
+            "node": "Extract Error Info",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract Error Info": {
+      "main": [
+        [
+          {
+            "node": "Update Status Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "tags": []
+}
