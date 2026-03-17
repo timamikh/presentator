@@ -32,5 +32,32 @@ describe('usePromptAggregator', () => {
       systemPrompt: 'System prompt'
     })
   })
+
+  it('adds attachmentIds and filePrompts into FormData', () => {
+    const prompt = ref('Test')
+    const slideCount = ref(0)
+    const slidePrompts = ref([])
+    const presentationSettings = ref({})
+    const systemPrompt = ref('')
+
+    const { toFormData } = usePromptAggregator({
+      prompt,
+      slideCount,
+      slidePrompts,
+      presentationSettings,
+      systemPrompt
+    })
+
+    const formData = toFormData({
+      files: [],
+      attachmentIds: ['11111111-1111-1111-1111-111111111111'],
+      filePrompts: [{ attachmentId: '11111111-1111-1111-1111-111111111111', prompt: 'use it' }]
+    })
+
+    expect(formData.get('attachmentIds')).toBe(JSON.stringify(['11111111-1111-1111-1111-111111111111']))
+    expect(formData.get('filePrompts')).toBe(
+      JSON.stringify([{ attachmentId: '11111111-1111-1111-1111-111111111111', prompt: 'use it' }])
+    )
+  })
 })
 

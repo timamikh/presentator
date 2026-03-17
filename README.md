@@ -2,6 +2,10 @@
 
 Микросервисное веб-приложение для генерации презентаций (PDF / PPTX) по текстовому промпту через LLM. Слайды генерируются как HTML/CSS, рендерятся Puppeteer, конвертируются в PDF и PPTX.
 
+## Release notes
+
+Список изменений по версиям см. в `CHANGELOG.md`.
+
 ## Архитектура
 
 ```
@@ -123,6 +127,8 @@ presentator/
 │   ├── 02-users-table.sql      # Таблицы users и jobs
 │   ├── 03-settings-table.sql   # Таблица settings (key/value)
 │   └── 04-result-paths.sql     # Колонка result_paths JSONB в jobs
+│   ├── 05-attachments.sql      # attachments + job_attachments (хранилище вложений)
+│   └── 06-job-revisions.sql    # job_revisions (версии/уточнения)
 │
 ├── api-service/
 │   ├── Dockerfile
@@ -136,6 +142,8 @@ presentator/
 │       ├── routes/
 │       │   ├── auth.js          # POST /api/auth/login
 │       │   ├── jobs.js          # CRUD задач, webhook trigger, скачивание
+│       │   ├── attachments.js   # CRUD хранилища вложений
+│       │   ├── files.js         # GET /api/files/attachment/:id (preview/serve)
 │       │   └── settings.js      # GET/PUT системного промпта
 │       └── scripts/
 │           └── seed-user.js
@@ -165,6 +173,7 @@ presentator/
 │       │   ├── SystemPromptModal.vue    # Редактирование системного промпта
 │       │   ├── SlidePromptsEditor.vue   # Промпты по отдельным слайдам
 │       │   └── PresentationSettings.vue # Шрифты, цвета, стиль
+│       │   └── StoragePicker.vue        # Выбор вложений из хранилища
 │       ├── composables/
 │       │   ├── usePromptAggregator.js   # Сборка payload для создания job
 │       │   └── usePromptAggregator.test.js
@@ -172,7 +181,8 @@ presentator/
 │           ├── LoginView.vue
 │           ├── DashboardView.vue
 │           ├── CreateJobView.vue
-│           └── JobStatusView.vue
+│           ├── JobStatusView.vue
+│           └── StorageView.vue
 │
 ├── n8n-workflows/
 │   └── presentator-pipeline.json
@@ -309,6 +319,14 @@ LLM генерирует HTML/CSS-слайды в JSON-формате:
 | POST | /api/jobs | Создать задачу (multipart: prompt, slideCount, slidePrompts, presentationSettings, systemPrompt, files) |
 | GET | /api/jobs/:id | Детали задачи (включая slide_data, llm_request, llm_response) |
 | GET | /api/jobs/:id/download?format=pdf\|pptx | Скачать результат (по умолчанию pdf) |
+| GET | /api/jobs/:id/revisions | История версий (уточнений) |
+| POST | /api/jobs/:id/revisions | Запустить «уточнение» (refinement) текущей презентации |
+| POST | /api/jobs/:id/revisions/:rev/restore | Откатить к выбранной версии |
+| GET | /api/attachments | Список вложений пользователя (поиск/фильтры) |
+| POST | /api/attachments | Загрузить вложение в хранилище |
+| PATCH | /api/attachments/:id | Обновить промпт/метаданные вложения |
+| DELETE | /api/attachments/:id | Удалить вложение |
+| GET | /api/files/attachment/:id | Скачать/превью вложения (JWT через header или `?token=`) |
 | GET | /api/settings/system-prompt | Получить системный промпт |
 | PUT | /api/settings/system-prompt | Обновить системный промпт |
 
@@ -352,6 +370,7 @@ Error-ветка: **Error Trigger** → **Extract Error Info** → **Update Stat
 | `LLM_MODEL` | Название модели |
 | `SEED_USER_EMAIL` / `SEED_USER_PASSWORD` | Seed-пользователь |
 | `N8N_WEBHOOK_URL` | URL webhook'а n8n (по умолчанию `http://n8n:5678/webhook/presentator-pipeline`) |
+| `N8N_PAYLOAD_SIZE_MAX` | Максимальный размер тела webhook'ов n8n (МБ), рекомендуется 64 для больших вложений/уточнений |
 
 ## Просмотр логов
 
@@ -397,7 +416,7 @@ docker compose logs -f converter-service  # Конвертер
 - **Нет регистрации**: Только seed-пользователь
 - **JWT в localStorage**: Для production → httpOnly cookie
 - **Нет rate limiting**
-- **Изображения не анализируются LLM**: Файлы загружаются, но LLM получает только текст
+- **Зависимость от лимитов webhook/payload**: большие изображения увеличивают payload; для стабильности избегайте хранения base64 в `previousSlideData` (уточнения)
 - **Один воркер n8n**: Для масштабирования → n8n queue mode
 - **PPTX = скриншоты**: Текст в PPTX не редактируемый (растровые изображения)
 

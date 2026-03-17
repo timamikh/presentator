@@ -5,11 +5,13 @@ import client from '../api/client'
 import PresentationSettings from '../components/PresentationSettings.vue'
 import SlidePromptsEditor from '../components/SlidePromptsEditor.vue'
 import SystemPromptModal from '../components/SystemPromptModal.vue'
+import StoragePicker from '../components/StoragePicker.vue'
 import { usePromptAggregator } from '../composables/usePromptAggregator'
 
 const router = useRouter()
 const prompt = ref('')
-const files = ref([])
+const uploadItems = ref([]) // [{ file: File, prompt: string }]
+const libraryItems = ref([]) // [{ attachment: object, prompt: string }]
 const error = ref('')
 const submitting = ref(false)
 const dragging = ref(false)
@@ -24,6 +26,7 @@ const presentationSettings = ref({
 const slidePrompts = ref([])
 const systemPrompt = ref('')
 const showSystemPromptModal = ref(false)
+const showStoragePicker = ref(false)
 
 const { toFormData } = usePromptAggregator({
   prompt,
@@ -47,13 +50,19 @@ function handleDrop(event) {
 
 function addFiles(fileList) {
   const incoming = Array.from(fileList)
-  const available = MAX_FILES - files.value.length
+  const available = MAX_FILES - (uploadItems.value.length + libraryItems.value.length)
   if (available <= 0) return
-  files.value.push(...incoming.slice(0, available))
+  uploadItems.value.push(
+    ...incoming.slice(0, available).map((f) => ({ file: f, prompt: '' }))
+  )
 }
 
-function removeFile(index) {
-  files.value.splice(index, 1)
+function removeUpload(index) {
+  uploadItems.value.splice(index, 1)
+}
+
+function removeLibrary(index) {
+  libraryItems.value.splice(index, 1)
 }
 
 function formatSize(bytes) {
@@ -62,19 +71,42 @@ function formatSize(bytes) {
   return (bytes / (1024 * 1024)).toFixed(1) + ' МБ'
 }
 
+function openStoragePicker() {
+  showStoragePicker.value = true
+}
+
+function onStorageConfirm(selected) {
+  const existing = new Set(libraryItems.value.map((x) => x.attachment.id))
+  const available = MAX_FILES - (uploadItems.value.length + libraryItems.value.length)
+  if (available <= 0) return
+
+  const toAdd = (Array.isArray(selected) ? selected : [])
+    .filter((a) => a && a.id && !existing.has(a.id))
+    .slice(0, available)
+    .map((a) => ({ attachment: a, prompt: a.prompt || '' }))
+  libraryItems.value.push(...toAdd)
+}
+
 async function handleSubmit() {
   if (!prompt.value.trim()) return
   error.value = ''
   submitting.value = true
 
   try {
-    const formData = toFormData(files.value)
+    const files = uploadItems.value.map((x) => x.file)
+    const attachmentIds = libraryItems.value.map((x) => x.attachment.id)
+    const filePrompts = [
+      ...uploadItems.value.map((x) => ({ fileName: x.file.name, prompt: x.prompt || '' })),
+      ...libraryItems.value.map((x) => ({ attachmentId: x.attachment.id, prompt: x.prompt || '' }))
+    ]
+
+    const formData = toFormData({ files, attachmentIds, filePrompts })
     const { data } = await client.post('/jobs', formData, {
       headers: { 'Content-Type': 'multipart/form-data' }
     })
     router.push(`/jobs/${data.id}`)
   } catch (err) {
-    error.value = err.response?.data?.detail || 'Не удалось создать задачу'
+    error.value = err.response?.data?.error || 'Не удалось создать задачу'
   } finally {
     submitting.value = false
   }
@@ -144,6 +176,19 @@ async function handleSubmit() {
               Файлы <span class="text-gray-400 font-normal">(до {{ MAX_FILES }})</span>
             </label>
 
+            <div class="flex items-center justify-between gap-3 mb-2">
+              <p class="text-xs text-gray-500">
+                Всего выбрано: {{ uploadItems.length + libraryItems.length }} / {{ MAX_FILES }}
+              </p>
+              <button
+                type="button"
+                class="inline-flex items-center gap-1 text-xs text-blue-600 hover:text-blue-700"
+                @click="openStoragePicker"
+              >
+                Добавить из хранилища
+              </button>
+            </div>
+
             <div
               @dragover.prevent="dragging = true"
               @dragleave.prevent="dragging = false"
@@ -170,25 +215,70 @@ async function handleSubmit() {
               </p>
             </div>
 
-            <ul v-if="files.length" class="mt-3 space-y-2">
+            <ul v-if="libraryItems.length" class="mt-3 space-y-2">
               <li
-                v-for="(file, idx) in files"
-                :key="idx"
-                class="flex items-center justify-between bg-gray-50 rounded-lg px-3 py-2 text-sm"
+                v-for="(item, idx) in libraryItems"
+                :key="item.attachment.id"
+                class="bg-gray-50 rounded-lg px-3 py-2 text-sm"
               >
-                <div class="flex items-center gap-2 min-w-0">
-                  <svg class="w-4 h-4 text-gray-400 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-                      d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
-                  </svg>
-                  <span class="truncate">{{ file.name }}</span>
-                  <span class="text-gray-400 shrink-0">{{ formatSize(file.size) }}</span>
+                <div class="flex items-start justify-between gap-3">
+                  <div class="flex items-center gap-2 min-w-0">
+                    <svg class="w-4 h-4 text-gray-400 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                        d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                    </svg>
+                    <div class="min-w-0">
+                      <p class="truncate">
+                        {{ item.attachment.original_name }}
+                        <span class="ml-1 text-[10px] text-blue-700 bg-blue-100 px-1.5 py-0.5 rounded-full">хранилище</span>
+                      </p>
+                      <p class="text-xs text-gray-400 truncate">{{ item.attachment.prompt || 'Без промта' }}</p>
+                    </div>
+                  </div>
+                  <button type="button" @click="removeLibrary(idx)" class="text-gray-400 hover:text-red-500 ml-2">
+                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
+                    </svg>
+                  </button>
                 </div>
-                <button type="button" @click.stop="removeFile(idx)" class="text-gray-400 hover:text-red-500 ml-2">
-                  <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
-                  </svg>
-                </button>
+                <textarea
+                  v-model="item.prompt"
+                  rows="2"
+                  class="mt-2 w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 resize-none bg-white"
+                  placeholder="Промт: как использовать этот файл"
+                ></textarea>
+              </li>
+            </ul>
+
+            <ul v-if="uploadItems.length" class="mt-3 space-y-2">
+              <li
+                v-for="(item, idx) in uploadItems"
+                :key="idx"
+                class="bg-gray-50 rounded-lg px-3 py-2 text-sm"
+              >
+                <div class="flex items-start justify-between gap-3">
+                  <div class="flex items-center gap-2 min-w-0">
+                    <svg class="w-4 h-4 text-gray-400 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                        d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                    </svg>
+                    <div class="min-w-0">
+                      <p class="truncate">{{ item.file.name }}</p>
+                      <p class="text-xs text-gray-400">{{ formatSize(item.file.size) }}</p>
+                    </div>
+                  </div>
+                  <button type="button" @click.stop="removeUpload(idx)" class="text-gray-400 hover:text-red-500 ml-2">
+                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
+                    </svg>
+                  </button>
+                </div>
+                <textarea
+                  v-model="item.prompt"
+                  rows="2"
+                  class="mt-2 w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 resize-none bg-white"
+                  placeholder="Промт: как использовать этот файл"
+                ></textarea>
               </li>
             </ul>
           </div>
@@ -213,6 +303,12 @@ async function handleSubmit() {
       v-model="showSystemPromptModal"
       :current-prompt="systemPrompt"
       @update:system-prompt="systemPrompt = $event"
+    />
+
+    <StoragePicker
+      v-model="showStoragePicker"
+      :selected-ids="libraryItems.map((x) => x.attachment.id)"
+      @confirm="onStorageConfirm"
     />
   </div>
 </template>

@@ -24,6 +24,12 @@ const routes = [
     name: 'JobStatus',
     component: () => import('./views/JobStatusView.vue'),
     meta: { requiresAuth: true }
+  },
+  {
+    path: '/storage',
+    name: 'Storage',
+    component: () => import('./views/StorageView.vue'),
+    meta: { requiresAuth: true }
   }
 ]
 

@@ -17,9 +17,16 @@ function logout() {
       v-if="isLoggedIn"
       class="bg-white border-b border-gray-200 px-6 py-3 flex items-center justify-between shadow-sm"
     >
-      <router-link to="/" class="text-xl font-bold text-blue-600 tracking-tight">
-        &#127912; Presentator
-      </router-link>
+      <div class="flex items-center gap-6">
+        <router-link to="/" class="text-xl font-bold text-blue-600 tracking-tight">
+          &#127912; Presentator
+        </router-link>
+        <div class="hidden sm:flex items-center gap-3 text-sm">
+          <router-link to="/" class="text-gray-600 hover:text-gray-900">Задачи</router-link>
+          <router-link to="/create" class="text-gray-600 hover:text-gray-900">Новая презентация</router-link>
+          <router-link to="/storage" class="text-gray-600 hover:text-gray-900">Хранилище</router-link>
+        </div>
+      </div>
       <button
         @click="logout"
         class="text-sm text-gray-500 hover:text-red-500 transition-colors cursor-pointer"

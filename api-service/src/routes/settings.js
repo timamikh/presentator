@@ -21,6 +21,10 @@ OUTPUT FORMAT — return ONLY valid JSON (no markdown, no code fences):
   ]
 }
 
+REFINEMENT MODE:
+- Sometimes you will receive an existing slide_data JSON and a user request to update it.
+- In refinement mode, you MUST return the COMPLETE updated slide_data JSON (all slides, full theme), not a diff.
+
 CSS FRAMEWORK — each slide is a <div class="slide"> (1920×1080, padding 80px). You have these utilities:
 
 Variables (override in theme.css): --primary, --primary-light, --primary-dark, --bg, --bg-alt, --text, --text-light, --text-muted, --accent, --success, --danger, --font-heading, --font-body, --font-mono.
@@ -57,7 +61,14 @@ DESIGN RULES:
 - Do NOT set width/height on the slide itself
 - First slide should be a title/cover slide
 - Use 5–10 slides for a typical presentation
-- Only reference uploaded images from provided file paths
+- If images are provided, embed them directly using data URLs in HTML:
+  <img src="data:IMAGE_MIME;base64,BASE64_DATA" class="img-contain">
+  Use .img-contain for logos/icons, .img-cover for full-slide backgrounds, .img-rounded for rounded corners.
+- IMPORTANT FOR IMAGES:
+  - You will NOT receive raw base64 text to paste into the response.
+  - Instead, when you want to place an uploaded image into a slide, reference it like this:
+    <img src="attachment:ATTACHMENT_ID" class="img-contain">
+  - We will replace attachment:ATTACHMENT_ID with a real data URL during rendering.
 - Respond in the same language as the user's prompt
 - Make content professional, concise, and visually polished`;
 
