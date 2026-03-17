@@ -1,16 +1,17 @@
 # Presentator
 
-Микросервисное веб-приложение для генерации презентаций (PPTX) по текстовому промпту и прикреплённым файлам с помощью LLM.
+Микросервисное веб-приложение для генерации презентаций (PDF / PPTX) по текстовому промпту через LLM. Слайды генерируются как HTML/CSS, рендерятся Puppeteer, конвертируются в PDF и PPTX.
 
 ## Архитектура
 
 ```
-┌────────────┐    ┌───────────────────────────────────────────────┐
-│  Браузер   │───▶│  Nginx (gateway, :80)                         │
-└────────────┘    │   /        → Frontend (Vue 3 SPA)             │
-                  │   /api/*   → API Service (Express, :3001)     │
-                  │   /n8n/*   → n8n (Workflow Engine, :5678)     │
-                  └───────────────────────────────────────────────┘
+┌────────────┐    ┌───────────────────────────────────────────────────────┐
+│  Браузер   │───▶│  Nginx (gateway, :80)                                 │
+└────────────┘    │   /           → Frontend (Vue 3 SPA)                  │
+                  │   /api/*      → API Service (Express, :3001)          │
+                  │   /n8n/*      → n8n (Workflow Engine, :5678)          │
+                  │   /converter/ → Converter Service (:3002)             │
+                  └───────────────────────────────────────────────────────┘
                         │                │                │
                         ▼                ▼                ▼
                ┌──────────────┐  ┌────────────┐  ┌──────────────┐
@@ -19,22 +20,23 @@
                │              │  │  Webhook ◀─┼──│   Vite)      │
                │  Auth (JWT)  │  │  trigger   │  └──────────────┘
                │  Jobs CRUD   │  │            │
-               │  File upload │  │  LLM call  │
-               └──────┬───────┘  │  Parse     │
-                      │          │  Callback  │
+               │  Settings    │  │  LLM call  │
+               │  File upload │  │  Parse     │
+               └──────┬───────┘  │  Callback  │
                       │          └─────┬──────┘
                       ▼                │
                ┌──────────────┐        ▼
                │  PostgreSQL  │  ┌──────────────┐
                │  (schemas:   │  │  Converter   │
                │   n8n,       │  │  Service     │
-               │   presentator│  │  (pptxgenjs) │
-               │  )           │  └──────────────┘
-               └──────────────┘
+               │   presentator│  │  (Puppeteer  │
+               │  )           │  │  + pptxgenjs)│
+               └──────────────┘  └──────────────┘
                       ▲                │
                       │                ▼
-                 shared_data     /data/results/*.pptx
-                   volume
+                 shared_data     /data/results/
+                   volume       ├── presentation.pdf
+                                └── presentation.pptx
 ```
 
 ### Сервисы
@@ -42,29 +44,30 @@
 | Сервис | Технологии | Порт | Назначение |
 |--------|-----------|------|------------|
 | **nginx** | Nginx 1.25 | 80 (внешний) | Reverse proxy, единая точка входа |
-| **api-service** | Node.js 22 + Express | 3001 | REST API: авторизация, управление задачами, загрузка файлов |
-| **n8n** | n8n (latest) | 5678 | Оркестратор пайплайна: принимает webhook, вызывает LLM, парсит ответ, вызывает конвертер |
-| **converter-service** | Node.js 22 + pptxgenjs | 3002 | Конвертация структурированного JSON в PPTX |
-| **frontend** | Vue 3 + Vite + TailwindCSS | 80 (внутренний) | SPA: логин, создание задач, превью слайдов, скачивание PPTX |
-| **postgres** | PostgreSQL 16 | 5432 | БД с двумя схемами: `n8n` (данные n8n) и `presentator` (пользователи, задачи) |
+| **api-service** | Node.js 22 + Express | 3001 | REST API: авторизация, управление задачами, настройки, загрузка файлов |
+| **n8n** | n8n (latest) | 5678 | Оркестратор пайплайна: webhook, вызов LLM, парсинг, конвертер, callback'и |
+| **converter-service** | Node.js + Puppeteer + pptxgenjs | 3002 | HTML-слайды → PDF (Puppeteer) + PPTX (скриншоты → pptxgenjs) |
+| **frontend** | Vue 3 + Vite + TailwindCSS | 80 (внутренний) | SPA: логин, создание задач, iframe-превью слайдов, скачивание PDF/PPTX |
+| **postgres** | PostgreSQL 16 | 5432 | БД: схемы `n8n` и `presentator` |
 
 ### Поток данных (pipeline)
 
-1. Пользователь вводит промпт и прикрепляет файлы через **Frontend**
+1. Пользователь вводит промпт, настраивает презентацию и прикрепляет файлы через **Frontend**
 2. **API Service** сохраняет задачу в БД (`status: pending`), загружает файлы в `/data/uploads/{job_id}/`, отправляет webhook в **n8n**
-3. **n8n** обновляет статус на `processing`, формирует prompt для LLM, вызывает LLM API
-4. LLM возвращает структурированный JSON со слайдами
-5. **n8n** сохраняет `slide_data` в БД через callback в API Service
-6. **n8n** отправляет `slide_data` в **Converter Service**
-7. **Converter Service** генерирует PPTX файл в `/data/results/{job_id}.pptx`
-8. **n8n** обновляет задачу: `status: done`, `result_path: /data/results/{job_id}.pptx`
-9. **Frontend** показывает превью слайдов и кнопку скачивания PPTX
+3. **n8n** обновляет статус на `processing`, формирует prompt для LLM (системный промпт + CSS-фреймворк + пользовательский промпт)
+4. LLM возвращает JSON с HTML/CSS-слайдами
+5. **n8n** параллельно: сохраняет `llm_request` / `llm_response` и парсит ответ
+6. **n8n** сохраняет `slide_data` в БД через callback в API Service
+7. **n8n** отправляет `slide_data` в **Converter Service**
+8. **Converter Service** рендерит HTML через Puppeteer → генерирует PDF + PPTX
+9. **n8n** обновляет задачу: `status: done`, `result_paths: {pdf: ..., pptx: ...}`
+10. **Frontend** показывает iframe-превью слайдов и кнопки скачивания PDF/PPTX
 
 ## Быстрый старт
 
 ### Требования
 
-- Docker Desktop
+- Docker Desktop (с поддержкой `shm_size`, т.к. Puppeteer использует /dev/shm)
 - Git
 
 ### Установка
@@ -82,7 +85,7 @@ cp .env.example .env
 docker compose up -d --build
 ```
 
-Все 6 контейнеров поднимутся автоматически. Первый запуск может занять несколько минут (скачивание образов и npm install).
+Все 6 контейнеров поднимутся автоматически. Первый запуск может занять несколько минут (скачивание образов, Puppeteer Chrome, npm install).
 
 ### Проверка
 
@@ -108,55 +111,63 @@ docker compose up -d --build
 
 ```
 presentator/
-├── docker-compose.yml          # Оркестрация всех сервисов
-├── .env.example                # Шаблон переменных окружения
+├── docker-compose.yml
+├── .env.example
 ├── .gitignore
 │
 ├── nginx/
-│   └── nginx.conf              # Конфигурация reverse proxy
+│   └── nginx.conf
 │
 ├── init-db/
 │   ├── 01-schemas.sql          # Создание схем n8n и presentator
-│   └── 02-users-table.sql      # Таблицы users и jobs
+│   ├── 02-users-table.sql      # Таблицы users и jobs
+│   ├── 03-settings-table.sql   # Таблица settings (key/value)
+│   └── 04-result-paths.sql     # Колонка result_paths JSONB в jobs
 │
 ├── api-service/
 │   ├── Dockerfile
 │   ├── package.json
 │   └── src/
-│       ├── index.js            # Express-приложение, точка входа
-│       ├── config.js           # Конфигурация из env (fail-fast при отсутствии секретов)
-│       ├── db.js               # Пул соединений PostgreSQL
+│       ├── index.js             # Express-приложение
+│       ├── config.js            # Конфиг из env (fail-fast)
+│       ├── db.js                # Пул PostgreSQL
 │       ├── middleware/
-│       │   └── auth.js         # JWT-авторизация + internal API key
+│       │   └── auth.js          # JWT + internal API key
 │       ├── routes/
-│       │   ├── auth.js         # POST /api/auth/login
-│       │   └── jobs.js         # CRUD /api/jobs, загрузка файлов, webhook trigger
+│       │   ├── auth.js          # POST /api/auth/login
+│       │   ├── jobs.js          # CRUD задач, webhook trigger, скачивание
+│       │   └── settings.js      # GET/PUT системного промпта
 │       └── scripts/
-│           └── seed-user.js    # Создание seed-пользователя при запуске
+│           └── seed-user.js
 │
 ├── converter-service/
-│   ├── Dockerfile
-│   ├── package.json
+│   ├── Dockerfile               # ghcr.io/puppeteer/puppeteer:24.6.1
+│   ├── package.json             # puppeteer, pptxgenjs, express
 │   └── src/
-│       ├── index.js            # Express-приложение, POST /convert
-│       └── converter.js        # JSON slide_data → PPTX (pptxgenjs)
+│       ├── index.js             # Express: /convert, /framework.css, /preview-html
+│       ├── converter.js         # buildHtml(), convertToFiles() → PDF + PPTX
+│       ├── slide-template.html  # HTML-шаблон с плейсхолдерами
+│       └── slide-framework.css  # CSS-фреймворк для слайдов 1920×1080
 │
 ├── frontend/
-│   ├── Dockerfile              # Multi-stage: Vite build → Nginx
-│   ├── nginx.conf              # SPA fallback для Vue Router
+│   ├── Dockerfile               # Multi-stage: Vite build → Nginx
+│   ├── nginx.conf               # SPA fallback
 │   ├── package.json
-│   ├── vite.config.js
-│   ├── tailwind.config.js
-│   ├── index.html
 │   └── src/
 │       ├── App.vue
 │       ├── main.js
-│       ├── router.js           # Vue Router: /login, /, /create, /jobs/:id
-│       ├── style.css           # TailwindCSS
+│       ├── router.js            # /login, /, /create, /jobs/:id
 │       ├── api/
-│       │   └── client.js       # Axios с JWT-интерцептором
+│       │   └── client.js        # Axios с JWT-интерцептором
 │       ├── components/
-│       │   └── SlidePreview.vue# Превью слайдов (HTML-рендеринг slide_data)
+│       │   ├── SlidePreview.vue         # iframe-превью с масштабированием
+│       │   ├── LlmLogViewer.vue         # Просмотр llm_request/llm_response
+│       │   ├── SystemPromptModal.vue    # Редактирование системного промпта
+│       │   ├── SlidePromptsEditor.vue   # Промпты по отдельным слайдам
+│       │   └── PresentationSettings.vue # Шрифты, цвета, стиль
+│       ├── composables/
+│       │   ├── usePromptAggregator.js   # Сборка payload для создания job
+│       │   └── usePromptAggregator.test.js
 │       └── views/
 │           ├── LoginView.vue
 │           ├── DashboardView.vue
@@ -164,11 +175,11 @@ presentator/
 │           └── JobStatusView.vue
 │
 ├── n8n-workflows/
-│   └── presentator-pipeline.json  # Экспорт n8n workflow
+│   └── presentator-pipeline.json
 │
 └── service-llm/
-    ├── config.yaml.example     # Шаблон конфигурации LLM-агента
-    └── agents.yaml             # Конфигурация агентов (SGR Deep Research)
+    ├── agents.yaml
+    └── config.yaml.example
 ```
 
 ## База данных
@@ -176,6 +187,7 @@ presentator/
 ### Схема `presentator`
 
 **users**
+
 | Колонка | Тип | Описание |
 |---------|-----|----------|
 | id | UUID (PK) | gen_random_uuid() |
@@ -185,66 +197,100 @@ presentator/
 | created_at | TIMESTAMPTZ | Дата создания |
 
 **jobs**
+
 | Колонка | Тип | Описание |
 |---------|-----|----------|
 | id | UUID (PK) | gen_random_uuid() |
 | user_id | UUID (FK → users) | Владелец задачи |
 | prompt | TEXT | Пользовательский промпт |
 | file_paths | JSONB | Массив путей загруженных файлов |
+| slide_count | INTEGER | Желаемое кол-во слайдов |
+| slide_prompts | JSONB | Промпты для отдельных слайдов |
+| presentation_settings | JSONB | Настройки (шрифт, цвета) |
+| system_prompt | TEXT | Кастомный системный промпт (или NULL для дефолтного) |
 | status | VARCHAR(20) | `pending` → `processing` → `done` / `error` |
-| slide_data | JSONB | Структурированные данные слайдов от LLM |
-| result_path | TEXT | Путь к готовому PPTX |
-| error_message | TEXT | Текст ошибки (если status = error) |
+| slide_data | JSONB | HTML/CSS слайды от LLM |
+| result_path | TEXT | Путь к PDF (для обратной совместимости) |
+| result_paths | JSONB | `{pdf: "...", pptx: "..."}` |
+| llm_request | JSONB | Сохранённый промпт к LLM |
+| llm_response | JSONB | Полный ответ LLM |
+| error_message | TEXT | Текст ошибки |
 | created_at | TIMESTAMPTZ | Дата создания |
 | updated_at | TIMESTAMPTZ | Дата обновления |
 
+**settings**
+
+| Колонка | Тип | Описание |
+|---------|-----|----------|
+| key | VARCHAR(100) PK | Ключ настройки |
+| value | TEXT | Значение |
+
+Ключ `default_system_prompt` — системный промпт по умолчанию. Если пуст, API отдаёт встроенный `DEFAULT_SYSTEM_PROMPT` из `settings.js`.
+
 ### Схема `n8n`
 
-Используется n8n для хранения своих workflows, credentials и execution history. Управляется автоматически.
+Управляется автоматически n8n (workflows, credentials, execution history).
 
 ## Формат slide_data (JSON)
 
-LLM генерирует и система оперирует единым JSON-форматом для описания слайдов:
+LLM генерирует HTML/CSS-слайды в JSON-формате:
 
 ```json
 {
-  "title": "Название презентации",
+  "theme": {
+    "css": ":root { --primary: #2563eb; --font-heading: 'Inter', sans-serif; }",
+    "fonts": ["Inter", "Roboto"]
+  },
   "slides": [
     {
-      "layout": "title",
-      "title": "Заголовок слайда",
-      "subtitle": "Подзаголовок"
-    },
-    {
-      "layout": "content",
-      "title": "Заголовок",
-      "bullets": ["Пункт 1", "Пункт 2", "Пункт 3"]
-    },
-    {
-      "layout": "two_column",
-      "title": "Заголовок",
-      "left": ["Левая колонка"],
-      "right": ["Правая колонка"]
-    },
-    {
-      "layout": "image",
-      "title": "Заголовок",
-      "image_url": "/path/to/image.png",
-      "caption": "Подпись"
-    },
-    {
-      "layout": "section",
-      "title": "Название раздела"
+      "html": "<div class=\"centered\"><h1 class=\"heading-xl\">Заголовок</h1></div>",
+      "css": ".custom { color: red; }",
+      "notes": "Заметки спикера"
     }
   ]
 }
 ```
 
-Поддерживаемые layouts: `title`, `content`, `section`, `image`, `two_column`.
+- **theme.css** — переопределение CSS-переменных фреймворка
+- **theme.fonts** — шрифты Google Fonts (загружаются автоматически)
+- **slides[].html** — HTML-контент слайда внутри `.slide` контейнера (1920×1080)
+- **slides[].css** — CSS для конкретного слайда
+- **slides[].notes** — заметки спикера (опционально)
 
-Этот же формат используется:
-- **Frontend** (`SlidePreview.vue`) — для HTML-превью слайдов
-- **Converter Service** (`converter.js`) — для генерации PPTX через pptxgenjs
+### CSS-фреймворк слайдов
+
+Каждый слайд рендерится внутри `<div class="slide">` (1920×1080px, padding 80px). Фреймворк (`slide-framework.css`) предоставляет:
+
+**CSS-переменные** (переопределяются в `theme.css`):
+`--primary`, `--primary-light`, `--primary-dark`, `--bg`, `--bg-alt`, `--text`, `--text-light`, `--text-muted`, `--accent`, `--font-heading`, `--font-body`, `--font-mono`
+
+**Layouts**: `.centered`, `.top-title`, `.split-2`, `.split-3`, `.split-left-wide`, `.split-right-wide`
+
+**Типографика**: `.heading-xl` (72px), `.heading-lg` (52px), `.heading-md` (40px), `.heading-sm` (32px), `.subtitle`, `.body-text`, `.body-lg`, `.caption`, `.small`, `.bold`, `.semibold`, `.uppercase`
+
+**Компоненты**: `.card`, `.card-bordered`, `.card-primary`, `.accent-line`, `.divider`, `.tag`, `.tag-outline`, `.icon-circle`, `.number-big`, `.quote`, `.code-block`
+
+**Списки**: `.bullets`, `.bullets-lg`, `.numbered`
+
+**Таблицы**: `.table` (стилизованные с цветной шапкой)
+
+**Диаграммы**: `.bar-container` + `.bar`, `.stat-value` + `.stat-label`
+
+**Фоны**: `.bg-primary`, `.bg-dark`, `.bg-gradient`, `.bg-gradient-light`, `.bg-alt`
+
+**Утилиты**: `.mt-1`..`.mt-4`, `.mb-1`..`.mb-3`, `.gap-1`..`.gap-4`, `.p-1`..`.p-3`, `.w-full`, `.h-full`
+
+## Конвертер
+
+**Converter Service** принимает `slide_data` и генерирует оба формата:
+
+1. **HTML → PDF**: Puppeteer рендерит все слайды в headless Chrome, `page.pdf()` с размером 1920×1080px
+2. **HTML → PPTX**: Puppeteer делает скриншоты каждого `.slide` элемента, pptxgenjs вставляет их как изображения (13.333×7.5 дюймов, 16:9)
+
+Эндпоинты:
+- `POST /convert` — `{slideData, outputDir}` → `{paths: {pdf, pptx}}`
+- `GET /framework.css` — CSS-фреймворк (нужен фронтенду для iframe-превью)
+- `POST /preview-html` — `{slideData}` → HTML (для отладки)
 
 ## API
 
@@ -260,85 +306,110 @@ LLM генерирует и система оперирует единым JSON-
 | Метод | Путь | Описание |
 |-------|------|----------|
 | GET | /api/jobs | Список задач текущего пользователя |
-| POST | /api/jobs | Создать задачу (multipart: prompt + files) |
-| GET | /api/jobs/:id | Детали задачи (включая slide_data) |
-| GET | /api/jobs/:id/download | Скачать готовый PPTX |
+| POST | /api/jobs | Создать задачу (multipart: prompt, slideCount, slidePrompts, presentationSettings, systemPrompt, files) |
+| GET | /api/jobs/:id | Детали задачи (включая slide_data, llm_request, llm_response) |
+| GET | /api/jobs/:id/download?format=pdf\|pptx | Скачать результат (по умолчанию pdf) |
+| GET | /api/settings/system-prompt | Получить системный промпт |
+| PUT | /api/settings/system-prompt | Обновить системный промпт |
 
 ### Внутренний (X-Internal-Key) эндпоинт
 
 | Метод | Путь | Описание |
 |-------|------|----------|
-| PATCH | /api/jobs/internal/:id | Обновление статуса задачи из n8n |
+| PATCH | /api/jobs/internal/:id | Обновление из n8n: status, slideData, resultPath, resultPaths, llmRequest, llmResponse, errorMessage |
+
+## n8n Workflow
+
+Файл: `n8n-workflows/presentator-pipeline.json`
+
+Ноды пайплайна:
+
+1. **Webhook** — принимает POST от API (`$json.body.jobId`, `$json.body.prompt`, `$json.body._secrets`)
+2. **Update Status to Processing** — PATCH `/api/jobs/internal/{jobId}` → `{status: "processing"}`
+3. **Build LLM Prompt** — собирает systemPrompt + userMessage из webhook data; агрегирует slideCount, slidePrompts, presentationSettings
+4. **Call LLM API** — POST к LLM (OpenAI-совместимый `/chat/completions`)
+5. **Save LLM Logs** (параллельно) — сохраняет llm_request / llm_response в БД
+6. **Parse LLM Response** — парсит JSON из LLM, валидирует `slides[].html`
+7. **Save Slide Data** — сохраняет slide_data в БД
+8. **Call Converter** — POST `/convert` → PDF + PPTX
+9. **Update Status Done** — сохраняет `result_paths` и `status: done`
+
+Error-ветка: **Error Trigger** → **Extract Error Info** → **Update Status Error**
+
+Секреты передаются через webhook payload (`_secrets.internalApiKey`, `_secrets.llmApiKey`, `_secrets.llmBaseUrl`, `_secrets.llmModel`), т.к. n8n v2+ ограничивает `$env`.
 
 ## Переменные окружения
 
-Все секреты и конфигурация — в `.env`. Шаблон: `.env.example`.
-
-Критически важные переменные:
+Все в `.env`. Шаблон: `.env.example`.
 
 | Переменная | Описание |
 |-----------|----------|
-| `POSTGRES_PASSWORD` | Пароль БД |
-| `JWT_SECRET` | Секрет для подписи JWT (min 64 символа) |
-| `INTERNAL_API_KEY` | Ключ для inter-service коммуникации (n8n → API) |
-| `SEED_USER_PASSWORD` | Пароль seed-пользователя |
-| `LLM_API_KEY` | API-ключ для LLM-сервиса |
-| `LLM_BASE_URL` | URL LLM API (OpenAI-совместимый формат) |
+| `POSTGRES_USER` / `POSTGRES_PASSWORD` / `POSTGRES_DB` | PostgreSQL |
+| `JWT_SECRET` | Секрет JWT (min 64 символа) |
+| `INTERNAL_API_KEY` | Ключ для n8n → API коммуникации |
+| `LLM_API_KEY` | API-ключ LLM (OpenAI-совместимый) |
+| `LLM_BASE_URL` | URL LLM API |
 | `LLM_MODEL` | Название модели |
-
-API Service падает при запуске, если обязательные env-переменные отсутствуют (fail-fast).
+| `SEED_USER_EMAIL` / `SEED_USER_PASSWORD` | Seed-пользователь |
+| `N8N_WEBHOOK_URL` | URL webhook'а n8n (по умолчанию `http://n8n:5678/webhook/presentator-pipeline`) |
 
 ## Просмотр логов
 
 ```bash
-# Все сервисы
-docker compose logs -f
-
-# Конкретный сервис
-docker compose logs -f api-service
-docker compose logs -f n8n
-docker compose logs -f converter-service
-docker compose logs -f frontend
-docker compose logs -f postgres
-docker compose logs -f nginx
+docker compose logs -f              # Все сервисы
+docker compose logs -f api-service   # API
+docker compose logs -f n8n           # Оркестратор
+docker compose logs -f converter-service  # Конвертер
 ```
 
-Визуальные логи выполнения workflow: http://localhost/n8n/ → Executions.
+Логи LLM-взаимодействий доступны в UI: страница задачи → раскрывающийся блок «LLM Request/Response».
 
-## Заметки для LLM-контекста
+Визуальные логи workflow: http://localhost/n8n/ → Executions.
+
+## Контекст для LLM (доработки)
 
 ### Ключевые архитектурные решения
 
-- **Structured JSON вместо HTML**: LLM генерирует не HTML, а структурированный JSON (`slide_data`). Это позволяет использовать один и тот же формат для превью на фронтенде и для генерации PPTX. HTML-вёрстка происходит только на стороне фронтенда (`SlidePreview.vue`).
+- **HTML/CSS-слайды**: LLM генерирует полноценный HTML/CSS для каждого слайда (1920×1080). Используется CSS-фреймворк (`slide-framework.css`) для единообразия. Конвертер рендерит HTML через Puppeteer и создаёт PDF + PPTX (скриншоты).
 
-- **n8n как оркестратор**: Вся логика пайплайна (вызов LLM, парсинг, callback'и, вызов конвертера) реализована в n8n workflow, а не в коде. Это даёт визуальное управление и быстрое прототипирование. Workflow хранится в `n8n-workflows/presentator-pipeline.json`.
+- **n8n как оркестратор**: Логика пайплайна реализована в n8n workflow, не в коде. Workflow хранится в `n8n-workflows/presentator-pipeline.json`. При обновлении — реимпорт через UI n8n или API n8n (не через прямое обновление SQL).
 
-- **Секреты через webhook payload**: n8n (v2+) ограничивает доступ к `$env` из expressions. Поэтому API Service передаёт секреты (LLM-ключ, internal API key) в теле webhook-запроса как объект `_secrets`. Workflow извлекает их из `$json.body._secrets` / `$json.secrets`.
+- **Секреты через webhook payload**: n8n v2+ ограничивает `$env`. API передаёт секреты в теле webhook как `_secrets`. Workflow читает их через `$json.body._secrets`.
 
-- **Shared volume `/data`**: Загруженные файлы (`/data/uploads/{job_id}/`) и результаты (`/data/results/{job_id}.pptx`) доступны через Docker volume `shared_data`, подключённый к `api-service`, `n8n` и `converter-service`.
+- **Shared volume `/data`**: Загрузки → `/data/uploads/{job_id}/`, результаты → `/data/results/{job_id}/presentation.{pdf,pptx}`. Volume `shared_data` подключён к `api-service`, `n8n`, `converter-service`.
 
-- **Изоляция БД**: PostgreSQL с двумя схемами (`n8n`, `presentator`) в одном инстансе. Для production рекомендуется разделить на отдельные БД.
+- **Iframe-превью**: `SlidePreview.vue` загружает CSS-фреймворк с `/converter/framework.css` и рендерит слайды в `<iframe srcdoc>` с масштабированием через `ResizeObserver`.
 
-### Известные ограничения MVP
+- **Системный промпт**: хранится в `presentator.settings` (`key='default_system_prompt'`). Если пуст — API отдаёт встроенный `DEFAULT_SYSTEM_PROMPT` из `api-service/src/routes/settings.js`. Пользователь может переопределить промпт в модалке создания задачи.
 
-- **Нет регистрации**: Только seed-пользователь. Регистрация не реализована.
-- **JWT в localStorage**: Для MVP допустимо, для production рекомендуется httpOnly cookie.
-- **Нет rate limiting**: API не защищён от brute-force.
-- **Нет обработки изображений**: LLM получает только текстовый промпт. Загруженные изображения сохраняются, но пока не анализируются LLM (нужен multimodal model или OCR-пайплайн).
-- **Нет очереди задач**: При большом количестве запросов n8n может стать узким местом. Рекомендуется добавить Redis + Bull для очереди.
-- **Один воркер n8n**: Для масштабирования нужен n8n в режиме queue с отдельными worker'ами.
-- **Нет тестов**: TDD-подход запланирован, но в MVP тесты не написаны.
-- **Converter поддерживает 5 layouts**: `title`, `content`, `section`, `image`, `two_column`. Для сложных презентаций нужно расширять.
+### Стек и версии
 
-### Зависимости и версии
-
-- Node.js 22 (alpine)
-- PostgreSQL 16 (alpine)
-- Nginx 1.25 (alpine)
-- n8n: latest
-- pptxgenjs: 3.12.0
+- Node.js 22 (Alpine для API, Puppeteer-образ для converter)
+- PostgreSQL 16 (Alpine)
+- Nginx 1.25 (Alpine)
+- n8n: latest (v2.11+)
+- Puppeteer 24.6+ (headless Chrome в Docker)
+- pptxgenjs 3.12+
 - Vue 3.5+, Vite 5.4+, TailwindCSS 3.4+
+
+### Известные ограничения
+
+- **Нет регистрации**: Только seed-пользователь
+- **JWT в localStorage**: Для production → httpOnly cookie
+- **Нет rate limiting**
+- **Изображения не анализируются LLM**: Файлы загружаются, но LLM получает только текст
+- **Один воркер n8n**: Для масштабирования → n8n queue mode
+- **PPTX = скриншоты**: Текст в PPTX не редактируемый (растровые изображения)
+
+### Частые задачи при доработке
+
+- **Изменить CSS-фреймворк слайдов**: `converter-service/src/slide-framework.css`
+- **Изменить HTML-шаблон слайдов**: `converter-service/src/slide-template.html`
+- **Изменить системный промпт по умолчанию**: `api-service/src/routes/settings.js` → `DEFAULT_SYSTEM_PROMPT`
+- **Изменить workflow n8n**: редактировать в UI n8n, экспортировать в `n8n-workflows/presentator-pipeline.json`
+- **Добавить новую таблицу/колонку**: создать SQL-файл в `init-db/` (нумерация: `05-...sql`)
+- **Пересобрать сервис**: `docker compose up -d --build <service-name>`
 
 ### Папка service-llm
 
-Содержит конфигурацию для SGR Deep Research Agent — внешнего инструмента для глубокого исследования. Не является частью основного пайплайна Presentator, но может использоваться для подготовки контента. Конфигурация (`config.yaml`) в `.gitignore`, т.к. содержит API-ключи. Шаблон: `config.yaml.example`.
+Конфигурация SGR Deep Research Agent — внешний инструмент для подготовки контента. Не часть основного пайплайна. `config.yaml` в `.gitignore`.

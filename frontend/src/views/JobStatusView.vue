@@ -3,6 +3,7 @@ import { ref, onMounted, onUnmounted, computed } from 'vue'
 import { useRoute } from 'vue-router'
 import client from '../api/client'
 import SlidePreview from '../components/SlidePreview.vue'
+import LlmLogViewer from '../components/LlmLogViewer.vue'
 
 const route = useRoute()
 const job = ref(null)
@@ -51,15 +52,15 @@ async function fetchJob() {
   }
 }
 
-async function downloadPptx() {
+async function downloadFile(format) {
   try {
-    const response = await client.get(`/jobs/${route.params.id}/download`, {
+    const response = await client.get(`/jobs/${route.params.id}/download?format=${format}`, {
       responseType: 'blob'
     })
     const url = window.URL.createObjectURL(new Blob([response.data]))
     const link = document.createElement('a')
     link.href = url
-    link.setAttribute('download', `presentation-${route.params.id}.pptx`)
+    link.setAttribute('download', `presentation-${route.params.id}.${format}`)
     document.body.appendChild(link)
     link.click()
     link.remove()
@@ -125,9 +126,19 @@ onUnmounted(() => {
 
       <!-- Done: slides + download -->
       <template v-if="job.status === 'done'">
-        <div v-if="job.result_path" class="mb-6">
+        <div v-if="job.result_path || job.result_paths" class="mb-6 flex flex-wrap gap-3">
           <button
-            @click="downloadPptx"
+            @click="downloadFile('pdf')"
+            class="inline-flex items-center gap-2 px-5 py-2.5 bg-red-600 text-white text-sm font-medium rounded-lg hover:bg-red-700 transition"
+          >
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+            </svg>
+            Скачать PDF
+          </button>
+          <button
+            @click="downloadFile('pptx')"
             class="inline-flex items-center gap-2 px-5 py-2.5 bg-green-600 text-white text-sm font-medium rounded-lg hover:bg-green-700 transition"
           >
             <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -149,6 +160,11 @@ onUnmounted(() => {
         <p class="text-red-700 font-medium mb-1">Ошибка при генерации</p>
         <p class="text-sm text-red-600">{{ job.error_message || 'Неизвестная ошибка' }}</p>
       </div>
+
+      <LlmLogViewer
+        :request="job.llm_request"
+        :response="job.llm_response"
+      />
 
       <div v-if="error" class="mt-4 text-sm text-red-600 bg-red-50 rounded-lg px-3 py-2">
         {{ error }}

@@ -81,11 +81,12 @@ services:
         condition: service_healthy
 
   # -----------------------------------------------
-  # Converter Service — HTML/JSON -> PPTX
+  # Converter Service — HTML slides → PDF + PPTX (Puppeteer)
   # -----------------------------------------------
   converter-service:
     build: ./converter-service
     restart: unless-stopped
+    shm_size: '1gb'
     volumes:
       - shared_data:/data
     networks:
