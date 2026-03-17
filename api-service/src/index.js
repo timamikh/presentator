@@ -3,6 +3,7 @@ const cors = require('cors');
 const config = require('./config');
 const authRouter = require('./routes/auth');
 const jobsRouter = require('./routes/jobs');
+const settingsRouter = require('./routes/settings');
 
 const app = express();
 
@@ -15,6 +16,7 @@ app.get('/health', (_req, res) => {
 
 app.use('/api/auth', authRouter);
 app.use('/api/jobs', jobsRouter);
+app.use('/api/settings', settingsRouter);
 
 app.use((err, _req, res, _next) => {
   console.error('Unhandled error:', err.message);

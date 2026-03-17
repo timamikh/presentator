@@ -16,6 +16,12 @@ CREATE TABLE IF NOT EXISTS presentator.jobs (
     slide_data JSONB,
     result_path TEXT,
     error_message TEXT,
+    slide_count INTEGER NOT NULL DEFAULT 0,
+    slide_prompts JSONB NOT NULL DEFAULT '[]',
+    presentation_settings JSONB NOT NULL DEFAULT '{}',
+    system_prompt TEXT,
+    llm_request JSONB,
+    llm_response JSONB,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );

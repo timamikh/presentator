@@ -3,6 +3,7 @@ import { ref, onMounted, onUnmounted, computed } from 'vue'
 import { useRoute } from 'vue-router'
 import client from '../api/client'
 import SlidePreview from '../components/SlidePreview.vue'
+import LlmLogViewer from '../components/LlmLogViewer.vue'
 
 const route = useRoute()
 const job = ref(null)
@@ -149,6 +150,11 @@ onUnmounted(() => {
         <p class="text-red-700 font-medium mb-1">Ошибка при генерации</p>
         <p class="text-sm text-red-600">{{ job.error_message || 'Неизвестная ошибка' }}</p>
       </div>
+
+      <LlmLogViewer
+        :request="job.llm_request"
+        :response="job.llm_response"
+      />
 
       <div v-if="error" class="mt-4 text-sm text-red-600 bg-red-50 rounded-lg px-3 py-2">
         {{ error }}

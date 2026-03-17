@@ -42,7 +42,7 @@
     },
     {
       "parameters": {
-        "jsCode": "const input = $input.first().json;\nconst webhookData = $('Webhook').first().json.body;\nconst prompt = webhookData.prompt;\nconst filePaths = webhookData.filePaths || [];\nconst jobId = webhookData.jobId;\nconst secrets = webhookData._secrets || {};\n\nconst systemPrompt = `You are a presentation designer. You receive a user's request and must generate a structured JSON for a presentation.\n\nOutput ONLY valid JSON (no markdown, no code fences) with this exact structure:\n{\n  \"slides\": [\n    {\n      \"layout\": \"title|content|section|image|two_column\",\n      \"title\": \"Slide title\",\n      \"subtitle\": \"Optional subtitle (title layout only)\",\n      \"body\": [\"Bullet 1\", \"Bullet 2\"],\n      \"image\": \"/data/uploads/job_ID/filename.ext\",\n      \"leftContent\": [\"Left col items\"],\n      \"rightContent\": [\"Right col items\"],\n      \"notes\": \"Speaker notes\"\n    }\n  ],\n  \"theme\": {\n    \"primaryColor\": \"#hex\",\n    \"fontFamily\": \"Font Name\"\n  }\n}\n\nRules:\n- First slide should be \"title\" layout\n- Use 5-10 slides for a typical presentation\n- Body arrays should have 3-5 bullet points\n- Only reference images from the provided file paths\n- Make content professional and well-structured\n- Respond in the same language as the user's prompt`;\n\nlet userMessage = prompt;\nif (filePaths.length > 0) {\n  userMessage += '\\n\\nAvailable files:\\n' + filePaths.map(f => '- ' + f).join('\\n');\n}\n\nreturn [{ json: { systemPrompt, userMessage, jobId, secrets } }];"
+        "jsCode": "const input = $input.first().json;\nconst webhookData = $('Webhook').first().json.body;\nconst prompt = webhookData.prompt;\nconst filePaths = webhookData.filePaths || [];\nconst jobId = webhookData.jobId;\nconst secrets = webhookData._secrets || {};\nconst promptMeta = webhookData.promptMeta || {};\n\nlet systemPrompt = promptMeta.systemPrompt;\nif (!systemPrompt || typeof systemPrompt !== 'string' || !systemPrompt.trim()) {\n  systemPrompt = `You are a presentation designer. You receive a user's request and must generate a structured JSON for a presentation.\n\nOutput ONLY valid JSON (no markdown, no code fences) with this exact structure:\n{\n  \"slides\": [\n    {\n      \"layout\": \"title|content|section|image|two_column\",\n      \"title\": \"Slide title\",\n      \"subtitle\": \"Optional subtitle (title layout only)\",\n      \"body\": [\"Bullet 1\", \"Bullet 2\"],\n      \"image\": \"/data/uploads/job_ID/filename.ext\",\n      \"leftContent\": [\"Left col items\"],\n      \"rightContent\": [\"Right col items\"],\n      \"notes\": \"Speaker notes\"\n    }\n  ],\n  \"theme\": {\n    \"primaryColor\": \"#hex\",\n    \"fontFamily\": \"Font Name\"\n  }\n}\n\nRules:\n- First slide should be \"title\" layout\n- Use 5-10 slides for a typical presentation\n- Body arrays should have 3-5 bullet points\n- Only reference images from the provided file paths\n- Make content professional and well-structured\n- Respond in the same language as the user's prompt`;\n}\n\nconst slideCount = Number(promptMeta.slideCount) || 0;\nconst slidePrompts = Array.isArray(promptMeta.slidePrompts) ? promptMeta.slidePrompts : [];\nconst presentationSettings = promptMeta.presentationSettings || {};\n\nlet userMessage = prompt;\n\nif (slideCount > 0) {\n  userMessage += `\\n\\nDesired slide count: ${slideCount}`;\n}\n\nif (slidePrompts.length > 0) {\n  userMessage += '\\n\\nSlide-specific prompts:';\n  for (const sp of slidePrompts) {\n    userMessage += `\\n- Slide ${sp.slideIndex + 1}: ${sp.prompt}`;\n  }\n}\n\nif (Object.keys(presentationSettings).length > 0) {\n  userMessage += '\\n\\nPresentation settings (theme hints in JSON):\\n';\n  userMessage += JSON.stringify(presentationSettings, null, 2);\n}\n\nif (filePaths.length > 0) {\n  userMessage += '\\n\\nAvailable files:\\n' + filePaths.map(f => '- ' + f).join('\\n');\n}\n\nreturn [{ json: { systemPrompt, userMessage, jobId, secrets, promptMeta, filePaths } }];"
       },
       "id": "b2c3d4e5-6f7a-4b8c-9d0e-b2c3d4e5f6a7",
       "name": "Build LLM Prompt",
@@ -75,6 +75,30 @@
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [1000, 300]
+    },
+    {
+      "parameters": {
+        "method": "PATCH",
+        "url": "=http://api-service:3001/api/jobs/internal/{{ $('Build LLM Prompt').first().json.jobId }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-Internal-Key",
+              "value": "={{ $('Build LLM Prompt').first().json.secrets.internalApiKey }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ llmRequest: { systemPrompt: $('Build LLM Prompt').first().json.systemPrompt, userMessage: $('Build LLM Prompt').first().json.userMessage }, llmResponse: $json }) }}",
+        "options": {}
+      },
+      "id": "llm-logs-node-1",
+      "name": "Save LLM Logs",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1250, 200]
     },
     {
       "parameters": {
@@ -232,6 +256,11 @@
         [
           {
             "node": "Parse LLM Response",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Save LLM Logs",
             "type": "main",
             "index": 0
           }
