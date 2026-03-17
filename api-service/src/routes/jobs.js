@@ -146,6 +146,7 @@ router.get('/:id', authRequired, async (req, res) => {
               file_paths,
               slide_data,
               result_path,
+              result_paths,
               error_message,
               slide_count,
               slide_prompts,
@@ -174,7 +175,7 @@ router.get('/:id', authRequired, async (req, res) => {
 router.get('/:id/download', authRequired, async (req, res) => {
   try {
     const result = await query(
-      `SELECT id, status, result_path
+      `SELECT id, status, result_path, result_paths
        FROM presentator.jobs
        WHERE id = $1 AND user_id = $2`,
       [req.params.id, req.user.id],
@@ -185,11 +186,24 @@ router.get('/:id/download', authRequired, async (req, res) => {
     }
 
     const job = result.rows[0];
-    if (job.status !== 'done' || !job.result_path) {
+    if (job.status !== 'done') {
       return res.status(404).json({ error: 'Result not ready' });
     }
 
-    return res.download(job.result_path);
+    const format = req.query.format || 'pdf';
+    let filePath = null;
+
+    if (job.result_paths && job.result_paths[format]) {
+      filePath = job.result_paths[format];
+    } else if (job.result_path) {
+      filePath = job.result_path;
+    }
+
+    if (!filePath) {
+      return res.status(404).json({ error: `Format "${format}" not available` });
+    }
+
+    return res.download(filePath);
   } catch (err) {
     console.error('Download error:', err.message);
     return res.status(500).json({ error: 'Internal server error' });
@@ -204,6 +218,7 @@ router.patch('/internal/:id', internalAuth, async (req, res) => {
       status,
       slideData,
       resultPath,
+      resultPaths,
       errorMessage,
       llmRequest,
       llmResponse,
@@ -223,6 +238,10 @@ router.patch('/internal/:id', internalAuth, async (req, res) => {
     if (resultPath !== undefined) {
       sets.push(`result_path = $${idx++}`);
       params.push(resultPath);
+    }
+    if (resultPaths !== undefined) {
+      sets.push(`result_paths = $${idx++}`);
+      params.push(JSON.stringify(resultPaths));
     }
     if (errorMessage !== undefined) {
       sets.push(`error_message = $${idx++}`);
@@ -250,7 +269,7 @@ router.patch('/internal/:id', internalAuth, async (req, res) => {
       `UPDATE presentator.jobs
        SET ${sets.join(', ')}
        WHERE id = $${idx}
-       RETURNING id, user_id, prompt, status, slide_data, result_path, error_message, created_at, updated_at`,
+       RETURNING id, user_id, prompt, status, slide_data, result_path, result_paths, error_message, created_at, updated_at`,
       params,
     );
 

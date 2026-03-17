@@ -1,6 +1,6 @@
 const express = require("express");
 const cors = require("cors");
-const { convertToFile } = require("./converter");
+const { convertToFiles, buildHtml } = require("./converter");
 
 const app = express();
 const PORT = process.env.PORT || 3002;
@@ -12,22 +12,46 @@ app.get("/health", (_req, res) => {
   res.json({ status: "ok" });
 });
 
-app.post("/convert", async (req, res) => {
-  const { slideData, outputPath } = req.body;
+app.get("/framework.css", (_req, res) => {
+  const css = require("fs").readFileSync(
+    require("path").join(__dirname, "slide-framework.css"),
+    "utf8",
+  );
+  res.type("text/css").set("Cache-Control", "public, max-age=3600").send(css);
+});
 
-  if (!slideData || !outputPath) {
+app.post("/convert", async (req, res) => {
+  const { slideData, outputDir } = req.body;
+
+  if (!slideData || !outputDir) {
     return res.status(400).json({
       success: false,
-      error: "Missing required fields: slideData and outputPath",
+      error: "Missing required fields: slideData and outputDir",
     });
   }
 
   try {
-    const filePath = await convertToFile(slideData, outputPath);
-    return res.json({ success: true, filePath });
+    const paths = await convertToFiles(slideData, outputDir);
+    return res.json({ success: true, paths });
   } catch (err) {
     console.error("Conversion error:", err);
     return res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+app.post("/preview-html", async (req, res) => {
+  const { slideData } = req.body;
+
+  if (!slideData) {
+    return res.status(400).json({ error: "Missing slideData" });
+  }
+
+  try {
+    const html = buildHtml(slideData);
+    return res.type("html").send(html);
+  } catch (err) {
+    console.error("Preview error:", err);
+    return res.status(500).json({ error: err.message });
   }
 });
 
