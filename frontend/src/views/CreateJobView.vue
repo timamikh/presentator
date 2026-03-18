@@ -15,11 +15,45 @@ const submitting = ref(false)
 const dragging = ref(false)
 const slideCount = ref(0)
 const presentationSettings = ref({
+  // legacy fields kept for backward compatibility/fallback in prompt builders
   fontFamily: 'Inter',
   titleFontFamily: 'Inter',
   primaryColor: '#2563eb',
   backgroundColor: '#ffffff',
-  fontSize: 16
+  fontSize: 16,
+  // new design model
+  design: {
+    palette: [
+      { hex: '#ffffff', role: 'bg_primary' },
+      { hex: '#2563eb', role: 'accent_primary' }
+    ],
+    styleTags: [],
+    customDesignPrompt: ''
+  },
+  textDesign: {
+    styles: [
+      {
+        id: 'titles',
+        name: 'Заголовки',
+        applyTo: ['titles'],
+        colorHex: '#2563eb',
+        fontFamily: 'Inter',
+        fontWeight: 700,
+        fontStyle: 'normal',
+        fontSizePt: 56
+      },
+      {
+        id: 'body',
+        name: 'Основной текст',
+        applyTo: ['body'],
+        colorHex: '#111827',
+        fontFamily: 'Inter',
+        fontWeight: 400,
+        fontStyle: 'normal',
+        fontSizePt: 28
+      }
+    ]
+  }
 })
 const slidePrompts = ref([])
 const systemPrompt = ref('')

@@ -15,7 +15,7 @@ export function usePromptAggregator({
     systemPrompt: (systemPrompt?.value || '').trim() || null
   }))
 
-  function toFormData(files) {
+  function toFormData(input = {}) {
     const data = aggregatedPayload.value
     const formData = new FormData()
 
@@ -27,8 +27,20 @@ export function usePromptAggregator({
       formData.append('systemPrompt', data.systemPrompt)
     }
 
-    if (Array.isArray(files)) {
-      files.forEach((file) => formData.append('files', file))
+    // Backward-compatible signature:
+    // - toFormData([File, ...])
+    // - toFormData({ files: File[], attachmentIds: string[], filePrompts: Array<{attachmentId, prompt}> })
+    const payload = Array.isArray(input) ? { files: input } : (input || {})
+    const files = Array.isArray(payload.files) ? payload.files : []
+    const attachmentIds = Array.isArray(payload.attachmentIds) ? payload.attachmentIds : []
+    const filePrompts = Array.isArray(payload.filePrompts) ? payload.filePrompts : []
+
+    files.forEach((file) => formData.append('files', file))
+    if (attachmentIds.length > 0) {
+      formData.append('attachmentIds', JSON.stringify(attachmentIds))
+    }
+    if (filePrompts.length > 0) {
+      formData.append('filePrompts', JSON.stringify(filePrompts))
     }
 
     return formData

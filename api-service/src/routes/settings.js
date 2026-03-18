@@ -21,6 +21,14 @@ OUTPUT FORMAT — return ONLY valid JSON (no markdown, no code fences):
   ]
 }
 
+IMPORTANT DESIGN INPUT:
+- The user message may contain a DESIGN_BRIEF block (PresentationDesign + TextDesign).
+- If DESIGN_BRIEF is present, you MUST follow it strictly.
+- Use it to pick palette roles, typography styles, and to override CSS variables in theme.css.
+
+REFINEMENT MODE:
+- Sometimes you will receive an existing slide_data JSON and a user request to update it.
+- In refinement mode, you MUST return the COMPLETE updated slide_data JSON (all slides, full theme), not a diff.
 CSS FRAMEWORK — each slide is a <div class="slide"> (1920×1080, padding 80px). You have these utilities:
 
 Variables (override in theme.css): --primary, --primary-light, --primary-dark, --bg, --bg-alt, --text, --text-light, --text-muted, --accent, --success, --danger, --font-heading, --font-body, --font-mono.
@@ -57,7 +65,9 @@ DESIGN RULES:
 - Do NOT set width/height on the slide itself
 - First slide should be a title/cover slide
 - Use 5–10 slides for a typical presentation
-- Only reference uploaded images from provided file paths
+- If images are provided, reference them in HTML like this (we will replace it with a real data URL during rendering):
+  <img src="attachment:ATTACHMENT_ID" class="img-contain">
+  Use .img-contain for logos/icons, .img-cover for full-slide backgrounds, .img-rounded for rounded corners.
 - Respond in the same language as the user's prompt
 - Make content professional, concise, and visually polished`;
 

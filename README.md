@@ -397,7 +397,7 @@ docker compose logs -f converter-service  # Конвертер
 - **Нет регистрации**: Только seed-пользователь
 - **JWT в localStorage**: Для production → httpOnly cookie
 - **Нет rate limiting**
-- **Изображения не анализируются LLM**: Файлы загружаются, но LLM получает только текст
+- **Изображения**: В workflow поддерживается мультимодальный `userContent` — изображения могут передаваться в LLM (если модель/endpoint поддерживает vision). Для встраивания в HTML используйте `src="attachment:ATTACHMENT_ID"` — подстановка в data URL делается после ответа LLM.
 - **Один воркер n8n**: Для масштабирования → n8n queue mode
 - **PPTX = скриншоты**: Текст в PPTX не редактируемый (растровые изображения)
 
