@@ -17,13 +17,10 @@ const SLIDE_H = 1080;
 const PPTX_W = 13.333;
 const PPTX_H = 7.5;
 
-let browserInstance = null;
-
 async function getBrowser() {
-  if (browserInstance && browserInstance.isConnected()) {
-    return browserInstance;
-  }
-  browserInstance = await puppeteer.launch({
+  return puppeteer.launch({
+    executablePath:
+      process.env.CHROME_PATH || process.env.PUPPETEER_EXECUTABLE_PATH || undefined,
     args: [
       "--no-sandbox",
       "--disable-setuid-sandbox",
@@ -31,9 +28,8 @@ async function getBrowser() {
       "--disable-gpu",
       "--font-render-hinting=none",
     ],
-    headless: true,
+    headless: "new",
   });
-  return browserInstance;
 }
 
 function buildHtml(slideData) {
@@ -68,9 +64,13 @@ async function renderPage(slideData) {
   const page = await browser.newPage();
 
   await page.setViewport({ width: SLIDE_W, height: SLIDE_H });
-  await page.setContent(html, { waitUntil: "networkidle0", timeout: 30000 });
+  await page.setContent(html, {
+    // networkidle0 can hang on slow/unreachable external fonts; DOM readiness is enough for screenshot/PDF
+    waitUntil: "domcontentloaded",
+    timeout: 120000,
+  });
 
-  return page;
+  return { browser, page };
 }
 
 async function generatePdf(page, outputPath) {
@@ -119,7 +119,7 @@ async function convertToFiles(slideData, outputDir) {
   const pdfPath = path.join(outputDir, "presentation.pdf");
   const pptxPath = path.join(outputDir, "presentation.pptx");
 
-  const page = await renderPage(slideData);
+  const { browser, page } = await renderPage(slideData);
 
   try {
     await generatePdf(page, pdfPath);
@@ -131,6 +131,7 @@ async function convertToFiles(slideData, outputDir) {
     return { pdf: pdfPath, pptx: pptxPath };
   } finally {
     await page.close();
+    await browser.close();
   }
 }
 

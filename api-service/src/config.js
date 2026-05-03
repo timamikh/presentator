@@ -23,6 +23,7 @@ const config = {
     process.env.N8N_WEBHOOK_URL ||
     'http://n8n:5678/webhook/presentator-pipeline',
   port: parseInt(process.env.PORT, 10) || 3001,
+  processingTimeoutMinutes: parseInt(process.env.PROCESSING_TIMEOUT_MINUTES, 10) || 8,
 };
 
 module.exports = config;

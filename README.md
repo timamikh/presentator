@@ -141,7 +141,7 @@ presentator/
 │           └── seed-user.js
 │
 ├── converter-service/
-│   ├── Dockerfile               # ghcr.io/puppeteer/puppeteer:24.6.1
+│   ├── Dockerfile               # Node 22 (bookworm) + system Chromium
 │   ├── package.json             # puppeteer, pptxgenjs, express
 │   └── src/
 │       ├── index.js             # Express: /convert, /framework.css, /preview-html
@@ -352,6 +352,7 @@ Error-ветка: **Error Trigger** → **Extract Error Info** → **Update Stat
 | `LLM_MODEL` | Название модели |
 | `SEED_USER_EMAIL` / `SEED_USER_PASSWORD` | Seed-пользователь |
 | `N8N_WEBHOOK_URL` | URL webhook'а n8n (по умолчанию `http://n8n:5678/webhook/presentator-pipeline`) |
+| `PROCESSING_TIMEOUT_MINUTES` | Таймаут job в статусе `processing`, после которого API помечает задачу как `error` |
 
 ## Просмотр логов
 
@@ -384,7 +385,7 @@ docker compose logs -f converter-service  # Конвертер
 
 ### Стек и версии
 
-- Node.js 22 (Alpine для API, Puppeteer-образ для converter)
+- Node.js 22 (Alpine для API, Bookworm + Chromium для converter)
 - PostgreSQL 16 (Alpine)
 - Nginx 1.25 (Alpine)
 - n8n: latest (v2.11+)
