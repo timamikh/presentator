@@ -21,7 +21,7 @@ app.get("/framework.css", (_req, res) => {
 });
 
 app.post("/convert", async (req, res) => {
-  const { slideData, outputDir } = req.body;
+  const { slideData, outputDir, attachmentMap } = req.body;
 
   if (!slideData || !outputDir) {
     return res.status(400).json({
@@ -31,7 +31,7 @@ app.post("/convert", async (req, res) => {
   }
 
   try {
-    const paths = await convertToFiles(slideData, outputDir);
+    const paths = await convertToFiles(slideData, outputDir, { attachmentMap });
     return res.json({ success: true, paths });
   } catch (err) {
     console.error("Conversion error:", err);
@@ -40,14 +40,14 @@ app.post("/convert", async (req, res) => {
 });
 
 app.post("/preview-html", async (req, res) => {
-  const { slideData } = req.body;
+  const { slideData, attachmentMap } = req.body;
 
   if (!slideData) {
     return res.status(400).json({ error: "Missing slideData" });
   }
 
   try {
-    const html = buildHtml(slideData);
+    const html = buildHtml(slideData, { attachmentMap });
     return res.type("html").send(html);
   } catch (err) {
     console.error("Preview error:", err);

@@ -15,13 +15,15 @@ describe('usePromptAggregator', () => {
       primaryColor: '#2563eb'
     })
     const systemPrompt = ref('System prompt')
+    const attachments = ref([])
 
     const { aggregatedPayload } = usePromptAggregator({
       prompt,
       slideCount,
       slidePrompts,
       presentationSettings,
-      systemPrompt
+      systemPrompt,
+      attachments
     })
 
     expect(aggregatedPayload.value).toEqual({
@@ -29,8 +31,64 @@ describe('usePromptAggregator', () => {
       slideCount: 5,
       slidePrompts: slidePrompts.value,
       presentationSettings: presentationSettings.value,
-      systemPrompt: 'System prompt'
+      systemPrompt: 'System prompt',
+      attachments: []
     })
   })
-})
 
+  it('normalizes attachments from picker shape (id) to API shape (attachmentId)', () => {
+    const prompt = ref('p')
+    const attachments = ref([
+      { id: 'aaa', description_snapshot: 'desc1', original_name: 'x.png' },
+      { attachmentId: 'bbb', description: '  trim me  ' },
+      { id: 'ccc' }
+    ])
+
+    const { aggregatedPayload } = usePromptAggregator({
+      prompt,
+      slideCount: ref(0),
+      slidePrompts: ref([]),
+      presentationSettings: ref({}),
+      systemPrompt: ref(''),
+      attachments
+    })
+
+    expect(aggregatedPayload.value.attachments).toEqual([
+      { attachmentId: 'aaa', description: 'desc1' },
+      { attachmentId: 'bbb', description: 'trim me' },
+      { attachmentId: 'ccc', description: '' }
+    ])
+  })
+
+  it('toFormData appends serialized attachments', () => {
+    const attachments = ref([{ attachmentId: 'x', description: 'd' }])
+    const { toFormData } = usePromptAggregator({
+      prompt: ref('hello'),
+      slideCount: ref(0),
+      slidePrompts: ref([]),
+      presentationSettings: ref({}),
+      systemPrompt: ref(''),
+      attachments
+    })
+
+    const fd = toFormData([])
+    expect(fd.get('attachments')).toBe(
+      JSON.stringify([{ attachmentId: 'x', description: 'd' }])
+    )
+    expect(fd.get('prompt')).toBe('hello')
+  })
+
+  it('works without attachments option (back-compat)', () => {
+    const { aggregatedPayload, toFormData } = usePromptAggregator({
+      prompt: ref('p'),
+      slideCount: ref(0),
+      slidePrompts: ref([]),
+      presentationSettings: ref({}),
+      systemPrompt: ref('')
+    })
+
+    expect(aggregatedPayload.value.attachments).toEqual([])
+    const fd = toFormData([])
+    expect(fd.get('attachments')).toBe('[]')
+  })
+})

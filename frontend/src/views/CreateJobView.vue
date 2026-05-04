@@ -5,6 +5,7 @@ import client from '../api/client'
 import PresentationSettings from '../components/PresentationSettings.vue'
 import SlidePromptsEditor from '../components/SlidePromptsEditor.vue'
 import SystemPromptModal from '../components/SystemPromptModal.vue'
+import StoragePicker from '../components/storage/StoragePicker.vue'
 import { usePromptAggregator } from '../composables/usePromptAggregator'
 
 const router = useRouter()
@@ -25,12 +26,18 @@ const slidePrompts = ref([])
 const systemPrompt = ref('')
 const showSystemPromptModal = ref(false)
 
+// libraryAttachments: rows from the picker, augmented with editable per-job description
+// (snapshot semantics — backend copies this into job_attachments and never writes back).
+const libraryAttachments = ref([])
+const showStoragePicker = ref(false)
+
 const { toFormData } = usePromptAggregator({
   prompt,
   slideCount,
   slidePrompts,
   presentationSettings,
-  systemPrompt
+  systemPrompt,
+  attachments: libraryAttachments
 })
 
 const MAX_FILES = 10
@@ -62,6 +69,33 @@ function formatSize(bytes) {
   return (bytes / (1024 * 1024)).toFixed(1) + ' МБ'
 }
 
+function handleStorageConfirm(selected) {
+  // Merge: keep existing entries, add only new ones (do not overwrite local description edits).
+  const existingIds = new Set(libraryAttachments.value.map((a) => a.id))
+  for (const att of selected) {
+    if (!existingIds.has(att.id)) {
+      libraryAttachments.value.push({
+        ...att,
+        // snapshot the library description into a job-local description field
+        description: att.description || ''
+      })
+    }
+  }
+}
+
+function removeLibraryAttachment(id) {
+  libraryAttachments.value = libraryAttachments.value.filter((a) => a.id !== id)
+}
+
+function getAttachmentPreviewUrl(id) {
+  const token = localStorage.getItem('token') || ''
+  return `/api/files/attachment/${id}?token=${encodeURIComponent(token)}`
+}
+
+function kindLabel(kind) {
+  return { image: 'изображение', document: 'документ', other: 'файл' }[kind] || 'файл'
+}
+
 async function handleSubmit() {
   if (!prompt.value.trim()) return
   error.value = ''
@@ -74,7 +108,7 @@ async function handleSubmit() {
     })
     router.push(`/jobs/${data.id}`)
   } catch (err) {
-    error.value = err.response?.data?.detail || 'Не удалось создать задачу'
+    error.value = err.response?.data?.error || err.response?.data?.detail || 'Не удалось создать задачу'
   } finally {
     submitting.value = false
   }
@@ -139,9 +173,79 @@ async function handleSubmit() {
             ></textarea>
           </div>
 
+          <!-- Library attachments -->
+          <div>
+            <div class="flex items-center justify-between mb-1.5">
+              <label class="block text-sm font-medium text-gray-700">
+                Вложения из хранилища
+              </label>
+              <button
+                type="button"
+                class="inline-flex items-center gap-1 text-xs text-blue-600 hover:text-blue-700"
+                @click="showStoragePicker = true"
+              >
+                <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4" />
+                </svg>
+                Выбрать из хранилища
+              </button>
+            </div>
+
+            <ul v-if="libraryAttachments.length" class="space-y-2">
+              <li
+                v-for="att in libraryAttachments"
+                :key="att.id"
+                class="bg-gray-50 rounded-lg p-2.5 flex gap-3"
+              >
+                <div class="w-14 h-14 bg-white rounded border border-gray-200 flex items-center justify-center shrink-0 overflow-hidden">
+                  <img
+                    v-if="att.kind === 'image'"
+                    :src="getAttachmentPreviewUrl(att.id)"
+                    :alt="att.original_name"
+                    class="max-h-full max-w-full object-contain"
+                    loading="lazy"
+                  />
+                  <svg v-else class="w-6 h-6 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5"
+                      d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                  </svg>
+                </div>
+                <div class="flex-1 min-w-0">
+                  <div class="flex items-start justify-between gap-2">
+                    <div class="min-w-0">
+                      <p class="text-sm font-medium text-gray-800 truncate">{{ att.original_name }}</p>
+                      <p class="text-[11px] text-gray-400">
+                        {{ kindLabel(att.kind) }}<span v-if="att.ref"> · ref={{ att.ref }}</span>
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      class="text-gray-400 hover:text-red-500 shrink-0"
+                      @click="removeLibraryAttachment(att.id)"
+                    >
+                      <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
+                      </svg>
+                    </button>
+                  </div>
+                  <textarea
+                    v-model="att.description"
+                    rows="2"
+                    placeholder="Описание для LLM (что это и как использовать)..."
+                    class="mt-1.5 w-full px-2 py-1 text-xs border border-gray-200 rounded resize-y focus:outline-none focus:ring-1 focus:ring-blue-500"
+                  ></textarea>
+                </div>
+              </li>
+            </ul>
+            <p v-else class="text-xs text-gray-400">
+              Нажмите «Выбрать из хранилища», чтобы добавить ранее загруженные файлы. У каждого вложения можно отредактировать описание для текущей задачи — оригинал в библиотеке не изменится.
+            </p>
+          </div>
+
+          <!-- One-shot file uploads (legacy path) -->
           <div>
             <label class="block text-sm font-medium text-gray-700 mb-1">
-              Файлы <span class="text-gray-400 font-normal">(до {{ MAX_FILES }})</span>
+              Разовые файлы <span class="text-gray-400 font-normal">(до {{ MAX_FILES }})</span>
             </label>
 
             <div
@@ -213,6 +317,12 @@ async function handleSubmit() {
       v-model="showSystemPromptModal"
       :current-prompt="systemPrompt"
       @update:system-prompt="systemPrompt = $event"
+    />
+
+    <StoragePicker
+      v-model="showStoragePicker"
+      :initially-selected-ids="libraryAttachments.map((a) => a.id)"
+      @confirm="handleStorageConfirm"
     />
   </div>
 </template>

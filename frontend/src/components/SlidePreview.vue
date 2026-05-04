@@ -1,10 +1,15 @@
 <script setup>
 import { ref, computed, watch, onMounted, onUnmounted, nextTick } from 'vue'
+import { rewriteUploadAssetPaths, rewriteAttachmentTokens } from '../utils/assetPaths'
 
 const props = defineProps({
   slideData: {
     type: Object,
     required: true
+  },
+  attachments: {
+    type: Array,
+    default: () => []
   }
 })
 
@@ -21,6 +26,21 @@ const theme = computed(() => props.slideData?.theme || {})
 const totalSlides = computed(() => slides.value.length)
 
 let resizeObserver = null
+const previewToken = typeof window !== 'undefined' ? localStorage.getItem('token') || '' : ''
+
+const refToId = computed(() => {
+  const map = new Map()
+  for (const a of props.attachments || []) {
+    if (a && a.ref && a.id) map.set(a.ref, a.id)
+  }
+  return map
+})
+
+function applyRewrites(content) {
+  let out = rewriteUploadAssetPaths(content || '', previewToken)
+  out = rewriteAttachmentTokens(out, refToId.value, previewToken)
+  return out
+}
 
 function updateScale() {
   if (!wrapperRef.value) return
@@ -63,6 +83,9 @@ onUnmounted(() => {
 
 function buildSlideSrcdoc(slide) {
   const t = theme.value
+  const safeThemeCss = applyRewrites(t.css || '')
+  const safeSlideCss = applyRewrites(slide.css || '')
+  const safeSlideHtml = applyRewrites(slide.html || '')
   let fontImports = ''
   if (Array.isArray(t.fonts) && t.fonts.length > 0) {
     const families = t.fonts
@@ -79,11 +102,11 @@ ${frameworkCss.value}
 body { margin:0; padding:0; background:white; overflow:hidden; }
 .slide { margin:0 !important; box-shadow:none !important; }
 </style>
-<style>${t.css || ''}</style>
-<style>${slide.css || ''}</style>
+<style>${safeThemeCss}</style>
+<style>${safeSlideCss}</style>
 </head>
 <body>
-<div class="slide">${slide.html || ''}</div>
+<div class="slide">${safeSlideHtml}</div>
 </body></html>`
 }
 

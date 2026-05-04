@@ -44,7 +44,7 @@
 | Сервис | Технологии | Порт | Назначение |
 |--------|-----------|------|------------|
 | **nginx** | Nginx 1.25 | 80 (внешний) | Reverse proxy, единая точка входа |
-| **api-service** | Node.js 22 + Express | 3001 | REST API: авторизация, управление задачами, настройки, загрузка файлов |
+| **api-service** | Node.js 22 + Express | 3001 | REST API: авторизация, задачи, настройки, хранилище вложений, отдача файлов |
 | **n8n** | n8n (latest) | 5678 | Оркестратор пайплайна: webhook, вызов LLM, парсинг, конвертер, callback'и |
 | **converter-service** | Node.js + Puppeteer + pptxgenjs | 3002 | HTML-слайды → PDF (Puppeteer) + PPTX (скриншоты → pptxgenjs) |
 | **frontend** | Vue 3 + Vite + TailwindCSS | 80 (внутренний) | SPA: логин, создание задач, iframe-превью слайдов, скачивание PDF/PPTX |
@@ -122,7 +122,10 @@ presentator/
 │   ├── 01-schemas.sql          # Создание схем n8n и presentator
 │   ├── 02-users-table.sql      # Таблицы users и jobs
 │   ├── 03-settings-table.sql   # Таблица settings (key/value)
-│   └── 04-result-paths.sql     # Колонка result_paths JSONB в jobs
+│   ├── 04-result-paths.sql     # Колонка result_paths JSONB в jobs
+│   ├── 05-folders.sql          # Дерево папок хранилища (folders)
+│   ├── 06-attachments.sql      # Библиотека вложений (attachments)
+│   └── 07-job-attachments.sql  # Связь jobs ↔ attachments + snapshot описания
 │
 ├── api-service/
 │   ├── Dockerfile
@@ -136,7 +139,13 @@ presentator/
 │       ├── routes/
 │       │   ├── auth.js          # POST /api/auth/login
 │       │   ├── jobs.js          # CRUD задач, webhook trigger, скачивание
-│       │   └── settings.js      # GET/PUT системного промпта
+│       │   ├── settings.js      # GET/PUT системного промпта
+│       │   ├── folders.js       # CRUD дерева папок
+│       │   ├── attachments.js   # CRUD библиотеки вложений
+│       │   └── files.js         # GET /api/files/attachment/:id (приватная отдача)
+│       ├── utils/
+│       │   ├── attachmentTokens.js       # Подмена {{attachment:<ref>}} в HTML/CSS
+│       │   └── attachmentTokens.test.js
 │       └── scripts/
 │           └── seed-user.js
 │
@@ -164,15 +173,24 @@ presentator/
 │       │   ├── LlmLogViewer.vue         # Просмотр llm_request/llm_response
 │       │   ├── SystemPromptModal.vue    # Редактирование системного промпта
 │       │   ├── SlidePromptsEditor.vue   # Промпты по отдельным слайдам
-│       │   └── PresentationSettings.vue # Шрифты, цвета, стиль
+│       │   ├── PresentationSettings.vue # Шрифты, цвета, стиль
+│       │   └── storage/
+│       │       ├── FolderTree.vue       # Рекурсивный компонент дерева
+│       │       ├── AttachmentGrid.vue   # Грид с inline-редактированием описания
+│       │       └── StoragePicker.vue    # Модальный селектор вложений для CreateJob
 │       ├── composables/
 │       │   ├── usePromptAggregator.js   # Сборка payload для создания job
-│       │   └── usePromptAggregator.test.js
+│       │   ├── usePromptAggregator.test.js
+│       │   └── useStorage.js            # CRUD-обёртки для хранилища
+│       ├── utils/
+│       │   ├── assetPaths.js            # rewriteUploadAssetPaths + rewriteAttachmentTokens
+│       │   └── assetPaths.test.js
 │       └── views/
 │           ├── LoginView.vue
 │           ├── DashboardView.vue
 │           ├── CreateJobView.vue
-│           └── JobStatusView.vue
+│           ├── JobStatusView.vue
+│           └── StorageView.vue          # Древовидное хранилище вложений
 │
 ├── n8n-workflows/
 │   └── presentator-pipeline.json
@@ -226,6 +244,50 @@ presentator/
 | value | TEXT | Значение |
 
 Ключ `default_system_prompt` — системный промпт по умолчанию. Если пуст, API отдаёт встроенный `DEFAULT_SYSTEM_PROMPT` из `settings.js`.
+
+**folders** — древовидная структура папок хранилища (произвольная глубина)
+
+| Колонка | Тип | Описание |
+|---------|-----|----------|
+| id | UUID (PK) | gen_random_uuid() |
+| user_id | UUID (FK → users) | Владелец |
+| parent_folder_id | UUID (FK → folders, NULL) | Родительская папка (NULL = корень) |
+| name | VARCHAR(255) | Имя папки (уникально среди sibling'ов) |
+| created_at / updated_at | TIMESTAMPTZ | |
+
+**attachments** — библиотека вложений пользователя
+
+| Колонка | Тип | Описание |
+|---------|-----|----------|
+| id | UUID (PK) | gen_random_uuid() |
+| user_id | UUID (FK → users) | Владелец |
+| folder_id | UUID (FK → folders, NULL) | Папка (NULL = корень) |
+| ref | VARCHAR(32) UNIQUE | Короткий стабильный ID для `{{attachment:<ref>}}` (например, `att_a3f12c4b`) |
+| original_name | VARCHAR(512) | Исходное имя файла |
+| storage_path | TEXT | Путь на диске (`/data/library/<uid>/<id>_<safe_name>`) |
+| mime_type | VARCHAR(255) | |
+| file_size | BIGINT | |
+| kind | VARCHAR(20) | `image` / `document` / `other` |
+| description | TEXT | Описание для LLM |
+| extracted_text | TEXT | (Резерв) текст из документа после предобработки |
+| content_summary | TEXT | (Резерв) сжатое описание контента |
+| width / height | INTEGER | Только для изображений |
+| created_at / updated_at | TIMESTAMPTZ | |
+
+Файлы лежат **плоско** в `/data/library/<user_id>/`. Папки — только в БД, поэтому перемещение между папками — это `UPDATE folder_id` без файлового I/O.
+
+**job_attachments** — связь job ↔ attachment + snapshot описания
+
+| Колонка | Тип | Описание |
+|---------|-----|----------|
+| id | UUID (PK) | gen_random_uuid() |
+| job_id | UUID (FK → jobs, ON DELETE CASCADE) | |
+| attachment_id | UUID (FK → attachments, ON DELETE RESTRICT) | |
+| description_snapshot | TEXT | Копия описания в момент добавления к задаче (snapshot semantics) |
+| sort_order | INTEGER | Порядок отображения |
+| created_at | TIMESTAMPTZ | |
+
+Snapshot гарантирует, что задачи не «дрейфуют» при правках в библиотеке. Удаление вложения, используемого в задаче, требует `?force=true` (отвязывает от всех jobs).
 
 ### Схема `n8n`
 
@@ -309,8 +371,18 @@ LLM генерирует HTML/CSS-слайды в JSON-формате:
 | POST | /api/jobs | Создать задачу (multipart: prompt, slideCount, slidePrompts, presentationSettings, systemPrompt, files) |
 | GET | /api/jobs/:id | Детали задачи (включая slide_data, llm_request, llm_response) |
 | GET | /api/jobs/:id/download?format=pdf\|pptx | Скачать результат (по умолчанию pdf) |
+| GET | /api/jobs/uploads/:jobId/* | Приватная отдача файлов задачи (Bearer или `?token=`) |
 | GET | /api/settings/system-prompt | Получить системный промпт |
 | PUT | /api/settings/system-prompt | Обновить системный промпт |
+| GET | /api/folders | Дерево папок текущего пользователя |
+| POST | /api/folders | Создать папку `{name, parentId?}` |
+| PATCH | /api/folders/:id | Переименовать / переместить (с защитой от циклов) |
+| DELETE | /api/folders/:id?force=true | Удалить (по умолчанию 409 если непуста) |
+| GET | /api/attachments?folderId=&q=&kind= | Список вложений (folderId: `root` / UUID / `all`) |
+| POST | /api/attachments | Загрузить вложение в библиотеку (multipart) |
+| PATCH | /api/attachments/:id | Обновить description / folderId / original_name |
+| DELETE | /api/attachments/:id?force=true | Удалить (по умолчанию 409 если используется в jobs) |
+| GET | /api/files/attachment/:id | Приватная отдача вложения (Bearer или `?token=`) |
 
 ### Внутренний (X-Internal-Key) эндпоинт
 
@@ -367,6 +439,75 @@ docker compose logs -f converter-service  # Конвертер
 
 Визуальные логи workflow: http://localhost/n8n/ → Executions.
 
+## Хранилище вложений и интеграция с LLM
+
+Хранилище — древовидная библиотека файлов пользователя (страница **Хранилище** во фронтенде, `StorageView.vue`). Каждое вложение имеет описание для LLM, которое подтягивается на странице создания презентации (snapshot — не редактирует оригинал в библиотеке).
+
+### Пайплайн передачи изображений в LLM
+
+LLM в проекте текстовая (не мультимодальная) и не анализирует изображения. Поэтому архитектура построена так, чтобы **передавать в LLM только метаданные**, а реальные файлы подставлять рендерерами:
+
+```
+Пользователь
+  │ выбирает вложения из библиотеки
+  ▼
+api-service: POST /api/jobs
+  │ INSERT в job_attachments (snapshot описания)
+  │ строит attachmentMap: { ref → {localPath, mimeType, filename} }
+  ▼
+n8n webhook payload
+  ├─ attachments[]: метаданные (ref, kind, filename, description, w×h, mime)
+  └─ attachmentMap: { ref → {localPath, ...} }            (компактно, без base64)
+  ▼
+n8n: Build LLM Prompt
+  │ добавляет блок "Available attachments" в user-message
+  │ дополняет system-prompt правилами по {{attachment:<ref>}}
+  ▼
+LLM
+  │ генерирует HTML/CSS, в <img src> пишет {{attachment:<ref>}}
+  ▼
+n8n: Save Slide Data → api-service (raw, с плейсхолдерами)
+n8n: Call Converter → передаёт slideData + attachmentMap
+  ▼
+converter-service                         api-service / frontend
+  │ {{attachment:X}} → file://...           │ {{attachment:X}} → /api/files/attachment/<id>?token=
+  ▼                                         ▼
+PDF / PPTX                                Iframe preview
+```
+
+### Правила плейсхолдера
+
+- Формат: `{{attachment:<ref>}}` где `<ref>` соответствует `[A-Za-z0-9_-]+`.
+- Подменяется в **трёх точках** через единую утилиту:
+  - `api-service/src/utils/attachmentTokens.js` — для `GET /api/jobs/:id` (URL вида `/api/files/attachment/<id>?token=<jwt>`).
+  - `frontend/src/utils/assetPaths.js` (`rewriteAttachmentTokens`) — defense-in-depth в `SlidePreview`.
+  - `converter-service/src/converter.js` (`substituteAttachmentTokens`) — рендеринг в `file://...` для Puppeteer.
+- В БД `slide_data` хранится **с плейсхолдерами**, без data-URL и без приватных URL.
+- Webhook payload и LLM-промт **никогда** не содержат `base64` — только метаданные и описания.
+
+### Заделы под следующие этапы
+
+- `attachments.extracted_text` и `attachments.content_summary` зарезервированы под предобработку документов (RAG / суммаризация).
+- `job_attachments.sort_order` + snapshot `description_snapshot` готовы под версии презентаций (refinement).
+- `attachmentMap` строится централизованно в `api-service` (одна точка правды) и переиспользуется во всех downstream-сервисах — добавление новых рендереров (например, отдельного PDF-сервиса) не требует переделки пайплайна.
+
+## Обновление БД (миграции)
+
+`init-db/*.sql` исполняются ТОЛЬКО при первой инициализации БД (когда volume `postgres_data` пустой). При обновлении уже работающей БД нужно вручную:
+
+```bash
+# Dev: проще сбросить БД целиком
+docker compose down -v && docker compose up -d --build
+
+# Prod: выполнить новые SQL вручную
+docker compose exec -T postgres \
+  psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -f - < init-db/05-folders.sql
+docker compose exec -T postgres \
+  psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -f - < init-db/06-attachments.sql
+docker compose exec -T postgres \
+  psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -f - < init-db/07-job-attachments.sql
+```
+
 ## Контекст для LLM (доработки)
 
 ### Ключевые архитектурные решения
@@ -381,7 +522,11 @@ docker compose logs -f converter-service  # Конвертер
 
 - **Iframe-превью**: `SlidePreview.vue` загружает CSS-фреймворк с `/converter/framework.css` и рендерит слайды в `<iframe srcdoc>` с масштабированием через `ResizeObserver`.
 
-- **Системный промпт**: хранится в `presentator.settings` (`key='default_system_prompt'`). Если пуст — API отдаёт встроенный `DEFAULT_SYSTEM_PROMPT` из `api-service/src/routes/settings.js`. Пользователь может переопределить промпт в модалке создания задачи.
+- **Системный промпт**: хранится в `presentator.settings` (`key='default_system_prompt'`). Если пуст — API отдаёт встроенный `DEFAULT_SYSTEM_PROMPT` из `api-service/src/routes/settings.js`. Пользователь может переопределить промпт в модалке создания задачи. К итоговому system-prompt n8n добавляет блок ATTACHMENT_RULES (правила работы с `{{attachment:<ref>}}`).
+
+- **Хранилище вложений**: древовидное (`presentator.folders` — рекурсивная self-FK), плоское на диске (`/data/library/<user_id>/<id>_<safe_name>`). Связь с задачами — через `job_attachments` со snapshot-копией описания.
+
+- **Плейсхолдеры `{{attachment:<ref>}}`**: единая точка правды — `api-service/src/utils/attachmentTokens.js` + симметричные хелперы во фронтенде и конвертере. Никогда не передаём base64 в webhook/LLM.
 
 ### Стек и версии
 
@@ -398,7 +543,7 @@ docker compose logs -f converter-service  # Конвертер
 - **Нет регистрации**: Только seed-пользователь
 - **JWT в localStorage**: Для production → httpOnly cookie
 - **Нет rate limiting**
-- **Изображения не анализируются LLM**: Файлы загружаются, но LLM получает только текст
+- **LLM текстовая, не мультимодальная**: Изображения передаются через метаданные + плейсхолдеры `{{attachment:<ref>}}` (см. секцию «Хранилище вложений»). LLM не «видит» картинки, но размещает их в HTML по описаниям пользователя.
 - **Один воркер n8n**: Для масштабирования → n8n queue mode
 - **PPTX = скриншоты**: Текст в PPTX не редактируемый (растровые изображения)
 

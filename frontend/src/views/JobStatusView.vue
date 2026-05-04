@@ -149,7 +149,11 @@ onUnmounted(() => {
           </button>
         </div>
 
-        <SlidePreview v-if="job.slide_data" :slide-data="job.slide_data" />
+        <SlidePreview
+          v-if="job.slide_data"
+          :slide-data="job.slide_data"
+          :attachments="job.attachments || []"
+        />
       </template>
 
       <!-- Error -->

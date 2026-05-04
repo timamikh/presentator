@@ -5,11 +5,17 @@ const { query } = require('./db');
 const authRouter = require('./routes/auth');
 const jobsRouter = require('./routes/jobs');
 const settingsRouter = require('./routes/settings');
+const foldersRouter = require('./routes/folders');
+const attachmentsRouter = require('./routes/attachments');
+const filesRouter = require('./routes/files');
 
 const app = express();
 
 app.use(cors());
-app.use(express.json());
+// 10mb is enough for textual descriptions and aggregated metadata; we never
+// transport file bodies in JSON (use multipart for uploads, file URLs everywhere else).
+app.use(express.json({ limit: '10mb' }));
+app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
 app.get('/health', (_req, res) => {
   res.json({ status: 'ok' });
@@ -18,6 +24,9 @@ app.get('/health', (_req, res) => {
 app.use('/api/auth', authRouter);
 app.use('/api/jobs', jobsRouter);
 app.use('/api/settings', settingsRouter);
+app.use('/api/folders', foldersRouter);
+app.use('/api/attachments', attachmentsRouter);
+app.use('/api/files', filesRouter);
 
 app.use((err, _req, res, _next) => {
   console.error('Unhandled error:', err.message);
