@@ -1,6 +1,7 @@
 <script setup>
 import { ref, computed, watch, onMounted, onUnmounted, nextTick } from 'vue'
 import { rewriteUploadAssetPaths, rewriteAttachmentTokens } from '../utils/assetPaths'
+import { calcSlideScale } from '../utils/slideScale'
 
 const props = defineProps({
   slideData: {
@@ -16,6 +17,7 @@ const props = defineProps({
 const currentIndex = ref(0)
 const frameworkCss = ref('')
 const wrapperRef = ref(null)
+const previewAreaRef = ref(null)
 const iframeScale = ref(0.5)
 
 const SLIDE_W = 1920
@@ -43,9 +45,19 @@ function applyRewrites(content) {
 }
 
 function updateScale() {
-  if (!wrapperRef.value) return
-  const containerWidth = wrapperRef.value.clientWidth
-  iframeScale.value = containerWidth / SLIDE_W
+  const el = previewAreaRef.value || wrapperRef.value
+  if (!el) return
+
+  const rect = el.getBoundingClientRect()
+  const scale = calcSlideScale({
+    containerWidth: rect.width,
+    containerHeight: rect.height,
+    slideWidth: SLIDE_W,
+    slideHeight: SLIDE_H,
+  })
+
+  // Keep a safe fallback to avoid NaN / zero-scale rendering.
+  iframeScale.value = scale > 0 ? scale : 0.001
 }
 
 onMounted(async () => {
@@ -71,9 +83,10 @@ onMounted(async () => {
   await nextTick()
   updateScale()
 
-  if (wrapperRef.value) {
+  const observed = previewAreaRef.value || wrapperRef.value
+  if (observed) {
     resizeObserver = new ResizeObserver(updateScale)
-    resizeObserver.observe(wrapperRef.value)
+    resizeObserver.observe(observed)
   }
 })
 
@@ -96,11 +109,12 @@ function buildSlideSrcdoc(slide) {
 
   return `<!DOCTYPE html>
 <html><head><meta charset="UTF-8">
+<meta name="viewport" content="width=1920">
 ${fontImports}
 <style>
 ${frameworkCss.value}
-body { margin:0; padding:0; background:white; overflow:hidden; }
-.slide { margin:0 !important; box-shadow:none !important; }
+html, body { margin:0; padding:0; width:${SLIDE_W}px; height:${SLIDE_H}px; overflow:hidden; background:transparent; }
+.slide { margin:0 !important; box-shadow:none !important; position:absolute; left:0; top:0; }
 </style>
 <style>${safeThemeCss}</style>
 <style>${safeSlideCss}</style>
@@ -174,17 +188,21 @@ watch(() => props.slideData, () => {
       class="bg-gray-100 rounded-xl shadow-lg border border-gray-200 overflow-hidden"
     >
       <div class="relative w-full" style="padding-bottom: 56.25%">
-        <div class="absolute inset-0 overflow-hidden">
+        <div ref="previewAreaRef" class="absolute inset-0 overflow-hidden">
           <iframe
             v-if="currentSrcdoc"
             :srcdoc="currentSrcdoc"
             :key="currentIndex"
             sandbox="allow-same-origin"
-            class="border-0 origin-top-left"
+            class="border-0 block"
             :style="{
               width: SLIDE_W + 'px',
               height: SLIDE_H + 'px',
-              transform: `scale(${iframeScale})`,
+              position: 'absolute',
+              left: '50%',
+              top: '50%',
+              transform: `translate(-50%, -50%) scale(${iframeScale})`,
+              transformOrigin: 'center center',
               pointerEvents: 'none'
             }"
             frameborder="0"
