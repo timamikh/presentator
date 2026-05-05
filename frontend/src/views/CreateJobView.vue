@@ -1,12 +1,16 @@
 <script setup>
-import { ref } from 'vue'
+import { ref, computed } from 'vue'
 import { useRouter } from 'vue-router'
 import client from '../api/client'
-import PresentationSettings from '../components/PresentationSettings.vue'
+import DesignBriefForm from '../components/design/DesignBriefForm.vue'
 import SlidePromptsEditor from '../components/SlidePromptsEditor.vue'
-import SystemPromptModal from '../components/SystemPromptModal.vue'
+import PromptsSettingsModal from '../components/PromptsSettingsModal.vue'
 import StoragePicker from '../components/storage/StoragePicker.vue'
 import { usePromptAggregator } from '../composables/usePromptAggregator'
+import {
+  defaultDesignBrief,
+  aggregateDesignBrief,
+} from '../composables/useDesignBriefAggregator'
 
 const router = useRouter()
 const prompt = ref('')
@@ -15,13 +19,7 @@ const error = ref('')
 const submitting = ref(false)
 const dragging = ref(false)
 const slideCount = ref(0)
-const presentationSettings = ref({
-  fontFamily: 'Inter',
-  titleFontFamily: 'Inter',
-  primaryColor: '#2563eb',
-  backgroundColor: '#ffffff',
-  fontSize: 16
-})
+const designBriefForm = ref(defaultDesignBrief())
 const slidePrompts = ref([])
 const systemPrompt = ref('')
 const showSystemPromptModal = ref(false)
@@ -31,13 +29,26 @@ const showSystemPromptModal = ref(false)
 const libraryAttachments = ref([])
 const showStoragePicker = ref(false)
 
+// Legacy presentation_settings shape kept for back-compat with pipeline_version=1.
+// For v2 the design brief is the source of truth and overwrites this on submit.
+const presentationSettings = computed(() => ({
+  fontFamily: designBriefForm.value?.typography?.body || 'Inter',
+  titleFontFamily: designBriefForm.value?.typography?.heading || 'Inter',
+  primaryColor: designBriefForm.value?.palette?.primary || '#2563eb',
+  backgroundColor: designBriefForm.value?.palette?.bg || '#ffffff',
+  fontSize: 16,
+}))
+
+const aggregatedDesignBrief = computed(() => aggregateDesignBrief(designBriefForm.value))
+
 const { toFormData } = usePromptAggregator({
   prompt,
   slideCount,
   slidePrompts,
   presentationSettings,
   systemPrompt,
-  attachments: libraryAttachments
+  attachments: libraryAttachments,
+  designBrief: aggregatedDesignBrief,
 })
 
 const MAX_FILES = 10
@@ -129,11 +140,11 @@ async function handleSubmit() {
     <form @submit.prevent="handleSubmit" class="space-y-6">
       <div class="grid grid-cols-1 lg:grid-cols-[minmax(0,1.1fr)_minmax(0,1.2fr)] gap-6">
         <div class="space-y-4">
-          <PresentationSettings
+          <DesignBriefForm
             :slide-count="slideCount"
-            :model-value="presentationSettings"
+            :model-value="designBriefForm"
             @update:slide-count="slideCount = $event"
-            @update:model-value="presentationSettings = $event"
+            @update:model-value="designBriefForm = $event"
           />
 
           <SlidePromptsEditor
@@ -160,7 +171,7 @@ async function handleSubmit() {
                   <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
                     d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
                 </svg>
-                <span>Системный промт</span>
+                <span>Системные промты</span>
               </button>
             </div>
             <textarea
@@ -313,7 +324,7 @@ async function handleSubmit() {
       </button>
     </form>
 
-    <SystemPromptModal
+    <PromptsSettingsModal
       v-model="showSystemPromptModal"
       :current-prompt="systemPrompt"
       @update:system-prompt="systemPrompt = $event"

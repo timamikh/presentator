@@ -7,6 +7,8 @@ export function usePromptAggregator({
   presentationSettings,
   systemPrompt,
   attachments,
+  designBrief,
+  pipelineVersion,
 }) {
   const aggregatedPayload = computed(() => ({
     prompt: (prompt?.value || '').trim(),
@@ -15,6 +17,10 @@ export function usePromptAggregator({
     presentationSettings: presentationSettings?.value || {},
     systemPrompt: (systemPrompt?.value || '').trim() || null,
     attachments: normalizeAttachments(attachments?.value),
+    designBrief: designBrief?.value || null,
+    pipelineVersion: Number.isFinite(Number(pipelineVersion?.value))
+      ? Number(pipelineVersion.value)
+      : 2,
   }))
 
   function toFormData(files) {
@@ -28,6 +34,10 @@ export function usePromptAggregator({
     if (data.systemPrompt) {
       formData.append('systemPrompt', data.systemPrompt)
     }
+    if (data.designBrief) {
+      formData.append('designBrief', JSON.stringify(data.designBrief))
+    }
+    formData.append('pipelineVersion', String(data.pipelineVersion))
 
     formData.append('attachments', JSON.stringify(data.attachments))
 

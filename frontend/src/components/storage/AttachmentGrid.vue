@@ -52,6 +52,21 @@ function isImage(att) {
 function kindLabel(kind) {
   return { image: 'изображение', document: 'документ', other: 'файл' }[kind] || 'файл'
 }
+
+const EXTRACTION_BADGE = {
+  pending: { label: 'обработка...', class: 'bg-amber-100 text-amber-700' },
+  processing: { label: 'обработка...', class: 'bg-amber-100 text-amber-700' },
+  done: { label: 'готово', class: 'bg-green-100 text-green-700' },
+  skipped: { label: 'пропущено', class: 'bg-gray-100 text-gray-600' },
+  failed: { label: 'ошибка', class: 'bg-red-100 text-red-700' },
+}
+
+function extractionBadge(att) {
+  // Hide the badge for images: extraction only stores w/h dimensions there
+  // and the user doesn't usually care about per-image processing status.
+  if (att.kind === 'image' || !att.extraction_status) return null
+  return EXTRACTION_BADGE[att.extraction_status] || null
+}
 </script>
 
 <template>
@@ -116,6 +131,16 @@ function kindLabel(kind) {
             <p class="text-[11px] text-gray-400">
               {{ kindLabel(att.kind) }}<span v-if="att.file_size"> · {{ formatSize(att.file_size) }}</span>
             </p>
+            <span
+              v-if="extractionBadge(att)"
+              :class="[
+                'inline-flex items-center gap-1 mt-1 px-1.5 py-0.5 rounded text-[10px] font-medium',
+                extractionBadge(att).class,
+              ]"
+              :title="att.extraction_error || ''"
+            >
+              {{ extractionBadge(att).label }}
+            </span>
           </div>
           <button
             v-if="showActions"

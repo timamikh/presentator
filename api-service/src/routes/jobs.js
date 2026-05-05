@@ -9,6 +9,13 @@ const config = require('../config');
 const { pool, query } = require('../db');
 const { authRequired, internalAuth } = require('../middleware/auth');
 const { substituteSlideDataTokens } = require('../utils/attachmentTokens');
+const {
+  STAGES,
+  isStage,
+  startStage,
+  completeStage,
+  loadAllStages,
+} = require('../services/pipeline');
 
 const UPLOAD_DIR = path.join('/data', 'uploads');
 
@@ -49,9 +56,6 @@ function authFromBearerOrQuery(req, res, next) {
   }
 }
 
-// Extracts the raw bearer token from the request, used as a query param when
-// rewriting {{attachment:<ref>}} → /api/files/attachment/<id>?token=<jwt> in
-// GET /api/jobs/:id responses (so the iframe preview can load images).
 function extractBearerToken(req) {
   const header = req.headers.authorization;
   if (header && header.startsWith('Bearer ')) {
@@ -85,6 +89,8 @@ router.post('/', authRequired, upload.array('files', 10), async (req, res) => {
       presentationSettings,
       systemPrompt,
       attachments,
+      designBrief,
+      pipelineVersion,
     } = req.body;
 
     if (!prompt) {
@@ -109,6 +115,9 @@ router.post('/', authRequired, upload.array('files', 10), async (req, res) => {
     const parsedSlidePrompts = parseJsonField(slidePrompts, 'slidePrompts') || [];
     const parsedPresentationSettings = parseJsonField(presentationSettings, 'presentationSettings') || {};
     const parsedAttachments = parseJsonField(attachments, 'attachments') || [];
+    const parsedDesignBrief = parseJsonField(designBrief, 'designBrief');
+    const parsedVersion = Number(pipelineVersion);
+    const version = parsedVersion === 1 || parsedVersion === 2 ? parsedVersion : 2;
 
     let attachmentRows = [];
     if (Array.isArray(parsedAttachments) && parsedAttachments.length > 0) {
@@ -141,9 +150,10 @@ router.post('/', authRequired, upload.array('files', 10), async (req, res) => {
     await client.query(
       `INSERT INTO presentator.jobs (
          id, user_id, prompt, status, file_paths, slide_count,
-         slide_prompts, presentation_settings, system_prompt, created_at, updated_at
+         slide_prompts, presentation_settings, system_prompt,
+         design_input, pipeline_version, current_stage, created_at, updated_at
        )
-       VALUES ($1, $2, $3, 'pending', $4, $5, $6, $7, $8, now(), now())`,
+       VALUES ($1, $2, $3, 'pending', $4, $5, $6, $7, $8, $9, $10, NULL, now(), now())`,
       [
         jobId,
         req.user.id,
@@ -153,10 +163,11 @@ router.post('/', authRequired, upload.array('files', 10), async (req, res) => {
         JSON.stringify(parsedSlidePrompts),
         JSON.stringify(parsedPresentationSettings),
         systemPrompt || null,
+        parsedDesignBrief ? JSON.stringify(parsedDesignBrief) : null,
+        version,
       ],
     );
 
-    const attachmentsBySpecOrder = [];
     if (Array.isArray(parsedAttachments) && attachmentRows.length > 0) {
       const byId = new Map(attachmentRows.map((r) => [r.id, r]));
       for (let i = 0; i < parsedAttachments.length; i++) {
@@ -176,28 +187,30 @@ router.post('/', authRequired, upload.array('files', 10), async (req, res) => {
            ON CONFLICT (job_id, attachment_id) DO NOTHING`,
           [jobId, row.id, description, i],
         );
-
-        attachmentsBySpecOrder.push({ row, description, sortOrder: i });
       }
     }
 
     await client.query('COMMIT');
 
-    triggerWebhook(
-      jobId,
-      prompt,
-      filePaths,
-      req.user.id,
-      {
-        slideCount: normalizedSlideCount,
-        slidePrompts: parsedSlidePrompts,
-        presentationSettings: parsedPresentationSettings,
-        systemPrompt: systemPrompt || null,
-      },
-      attachmentsBySpecOrder,
-    );
+    if (version === 1) {
+      // Legacy single-pass workflow (pipeline_version=1) — kept for
+      // backwards compatibility with old jobs / existing n8n workflow.
+      triggerLegacyWebhook(jobId);
+    } else {
+      // New staged pipeline: kick off Planning stage. Subsequent stages are
+      // triggered explicitly by the user via /api/jobs/:id/stages/:stage/start.
+      try {
+        await startStage({ jobId, stage: 'planning' });
+      } catch (err) {
+        console.error(`Failed to start planning stage for ${jobId}:`, err.message);
+        await query(
+          `UPDATE presentator.jobs SET status = 'error', error_message = $1 WHERE id = $2`,
+          [err.message, jobId],
+        );
+      }
+    }
 
-    return res.status(202).json({ id: jobId, status: 'pending' });
+    return res.status(202).json({ id: jobId, status: 'pending', pipeline_version: version });
   } catch (err) {
     try { await client.query('ROLLBACK'); } catch {}
     if (jobDirCreated) {
@@ -213,7 +226,8 @@ router.post('/', authRequired, upload.array('files', 10), async (req, res) => {
 router.get('/', authRequired, async (req, res) => {
   try {
     const result = await query(
-      `SELECT id, prompt, status, created_at, updated_at
+      `SELECT id, prompt, status, current_stage, pipeline_version,
+              created_at, updated_at
        FROM presentator.jobs
        WHERE user_id = $1
        ORDER BY created_at DESC`,
@@ -236,9 +250,7 @@ router.get('/uploads/:jobId/*', authFromBearerOrQuery, async (req, res) => {
     }
 
     const ownerCheck = await query(
-      `SELECT 1
-       FROM presentator.jobs
-       WHERE id = $1 AND user_id = $2`,
+      `SELECT 1 FROM presentator.jobs WHERE id = $1 AND user_id = $2`,
       [jobId, req.user.id],
     );
     if (ownerCheck.rows.length === 0) {
@@ -266,23 +278,11 @@ router.get('/uploads/:jobId/*', authFromBearerOrQuery, async (req, res) => {
 router.get('/:id', authRequired, async (req, res) => {
   try {
     const result = await query(
-      `SELECT id,
-              user_id,
-              prompt,
-              status,
-              file_paths,
-              slide_data,
-              result_path,
-              result_paths,
-              error_message,
-              slide_count,
-              slide_prompts,
-              presentation_settings,
-              system_prompt,
-              llm_request,
-              llm_response,
-              created_at,
-              updated_at
+      `SELECT id, user_id, prompt, status, current_stage, pipeline_version,
+              file_paths, slide_data, planning_result, design_brief, design_input,
+              result_path, result_paths, error_message, slide_count, slide_prompts,
+              presentation_settings, system_prompt, llm_request, llm_response,
+              created_at, updated_at
        FROM presentator.jobs
        WHERE id = $1 AND user_id = $2`,
       [req.params.id, req.user.id],
@@ -305,9 +305,6 @@ router.get('/:id', authRequired, async (req, res) => {
     );
     const jobAttachments = attachmentsResult.rows;
 
-    // Substitute {{attachment:<ref>}} placeholders in slide_data on the fly with
-    // private file URLs so the frontend iframe preview can load the images
-    // without further client-side rewriting. The DB stays "clean" with raw tokens.
     if (row.slide_data && jobAttachments.length > 0) {
       const token = extractBearerToken(req);
       const refToId = new Map(jobAttachments.map((a) => [a.ref, a.id]));
@@ -325,6 +322,93 @@ router.get('/:id', authRequired, async (req, res) => {
   } catch (err) {
     console.error('Get job error:', err.message);
     return res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// ── Staged pipeline management ──────────────────────────────────────
+
+router.get('/:id/steps', authRequired, async (req, res) => {
+  try {
+    const ownerCheck = await query(
+      `SELECT 1 FROM presentator.jobs WHERE id = $1 AND user_id = $2`,
+      [req.params.id, req.user.id],
+    );
+    if (ownerCheck.rows.length === 0) {
+      return res.status(404).json({ error: 'Job not found' });
+    }
+    const steps = await loadAllStages(req.params.id);
+    return res.json(steps);
+  } catch (err) {
+    console.error('List steps error:', err.message);
+    return res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+router.post('/:id/stages/:stage/start', authRequired, async (req, res) => {
+  try {
+    const { id, stage } = req.params;
+    if (!isStage(stage)) {
+      return res.status(400).json({ error: `Unknown stage: ${stage}` });
+    }
+    const ownerCheck = await query(
+      `SELECT 1 FROM presentator.jobs WHERE id = $1 AND user_id = $2`,
+      [id, req.user.id],
+    );
+    if (ownerCheck.rows.length === 0) {
+      return res.status(404).json({ error: 'Job not found' });
+    }
+
+    const overrides = {};
+    if (req.body?.planning_result !== undefined) {
+      overrides.planning_result = req.body.planning_result;
+    }
+    if (req.body?.design_brief !== undefined) {
+      overrides.design_brief = req.body.design_brief;
+    }
+    if (typeof req.body?.refinePrompt === 'string') {
+      overrides.refinePrompt = req.body.refinePrompt;
+    }
+    if (typeof req.body?.slideIndex === 'number') {
+      overrides.slideIndex = req.body.slideIndex;
+    }
+
+    const result = await startStage({ jobId: id, stage, overrides });
+    return res.status(202).json(result);
+  } catch (err) {
+    console.error('Start stage error:', err.message);
+    return res.status(err.status || 500).json({ error: err.message || 'Internal error' });
+  }
+});
+
+router.post('/:id/refine', authRequired, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const ownerCheck = await query(
+      `SELECT 1 FROM presentator.jobs WHERE id = $1 AND user_id = $2`,
+      [id, req.user.id],
+    );
+    if (ownerCheck.rows.length === 0) {
+      return res.status(404).json({ error: 'Job not found' });
+    }
+
+    if (typeof req.body?.prompt !== 'string' || !req.body.prompt.trim()) {
+      return res.status(400).json({ error: 'prompt is required' });
+    }
+    const overrides = {
+      refinePrompt: req.body.prompt.trim(),
+      slideIndex:
+        typeof req.body.slideIndex === 'number' ? req.body.slideIndex : null,
+    };
+
+    const result = await startStage({
+      jobId: id,
+      stage: 'refine_layout',
+      overrides,
+    });
+    return res.status(202).json(result);
+  } catch (err) {
+    console.error('Refine error:', err.message);
+    return res.status(err.status || 500).json({ error: err.message || 'Internal error' });
   }
 });
 
@@ -366,8 +450,11 @@ router.get('/:id/download', authRequired, async (req, res) => {
   }
 });
 
-// ─── Internal route (n8n callbacks) ─────────────────────────────────
+// ─── Internal routes (n8n callbacks) ───────────────────────────────
 
+// Legacy callback: PATCH /api/jobs/internal/:id — single-pass updates for
+// pipeline_version=1 jobs and for the converter's "done" callback (which is
+// shared between v1 and v2 layout/refine paths).
 router.patch('/internal/:id', internalAuth, async (req, res) => {
   try {
     const {
@@ -408,7 +495,6 @@ router.patch('/internal/:id', internalAuth, async (req, res) => {
       sets.push(`llm_request = $${idx++}`);
       params.push(JSON.stringify(llmRequest));
     }
-
     if (llmResponse !== undefined) {
       sets.push(`llm_response = $${idx++}`);
       params.push(JSON.stringify(llmResponse));
@@ -425,14 +511,13 @@ router.patch('/internal/:id', internalAuth, async (req, res) => {
       `UPDATE presentator.jobs
        SET ${sets.join(', ')}
        WHERE id = $${idx}
-       RETURNING id, user_id, prompt, status, slide_data, result_path, result_paths, error_message, created_at, updated_at`,
+       RETURNING id, user_id, status, current_stage`,
       params,
     );
 
     if (result.rows.length === 0) {
       return res.status(404).json({ error: 'Job not found' });
     }
-
     return res.json(result.rows[0]);
   } catch (err) {
     console.error('Internal update error:', err.message);
@@ -440,59 +525,107 @@ router.patch('/internal/:id', internalAuth, async (req, res) => {
   }
 });
 
+// Stage-aware callback: PATCH /api/jobs/internal/:id/steps/:stage
+// body: { output, llmRequest?, llmResponse?, errorMessage? }
+router.patch('/internal/:id/steps/:stage', internalAuth, async (req, res) => {
+  try {
+    const { id, stage } = req.params;
+    if (!isStage(stage)) {
+      return res.status(400).json({ error: `Unknown stage: ${stage}` });
+    }
+    const { output, llmRequest, llmResponse, errorMessage } = req.body || {};
+    const result = await completeStage({
+      jobId: id,
+      stage,
+      output,
+      llmRequest,
+      llmResponse,
+      errorMessage,
+    });
+    return res.json(result);
+  } catch (err) {
+    console.error('Complete stage error:', err.message);
+    return res.status(err.status || 500).json({ error: err.message || 'Internal error' });
+  }
+});
+
 // ─── Helpers ────────────────────────────────────────────────────────
 
-function buildAttachmentPayload(attachmentEntries) {
-  const attachments = [];
-  const attachmentMap = {};
+// Legacy webhook trigger for pipeline_version=1 (single-pass) jobs.
+async function triggerLegacyWebhook(jobId) {
+  try {
+    const job = await query(
+      `SELECT id, prompt, file_paths, slide_count, slide_prompts,
+              presentation_settings, system_prompt, user_id
+         FROM presentator.jobs WHERE id = $1`,
+      [jobId],
+    );
+    if (job.rows.length === 0) return;
+    const row = job.rows[0];
 
-  for (const entry of attachmentEntries) {
-    const { row, description } = entry;
-    attachments.push({
-      ref: row.ref,
-      kind: row.kind,
-      filename: row.original_name,
-      mimeType: row.mime_type,
-      fileSize: row.file_size,
-      description: description || null,
-      width: row.width,
-      height: row.height,
+    const attRes = await query(
+      `SELECT a.ref, a.kind, a.original_name, a.mime_type, a.file_size,
+              a.storage_path, a.id, a.width, a.height, a.content_summary,
+              ja.description_snapshot
+         FROM presentator.job_attachments ja
+         JOIN presentator.attachments a ON a.id = ja.attachment_id
+        WHERE ja.job_id = $1
+        ORDER BY ja.sort_order, ja.created_at`,
+      [jobId],
+    );
+
+    const attachments = [];
+    const attachmentMap = {};
+    for (const r of attRes.rows) {
+      attachments.push({
+        ref: r.ref,
+        kind: r.kind,
+        filename: r.original_name,
+        mimeType: r.mime_type,
+        fileSize: r.file_size,
+        description: r.description_snapshot || null,
+        summary: r.content_summary || null,
+        width: r.width,
+        height: r.height,
+      });
+      attachmentMap[r.ref] = {
+        id: r.id,
+        localPath: r.storage_path,
+        mimeType: r.mime_type,
+        filename: r.original_name,
+      };
+    }
+
+    fetch(config.n8nWebhookUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        jobId,
+        // legacy: no `stage` — Switch in v2 workflow falls through to legacy
+        prompt: row.prompt,
+        filePaths: row.file_paths || [],
+        userId: row.user_id,
+        promptMeta: {
+          slideCount: row.slide_count,
+          slidePrompts: row.slide_prompts || [],
+          presentationSettings: row.presentation_settings || {},
+          systemPrompt: row.system_prompt || null,
+        },
+        attachments,
+        attachmentMap,
+        _secrets: {
+          internalApiKey: config.internalApiKey,
+          llmApiKey: process.env.LLM_API_KEY || '',
+          llmBaseUrl: process.env.LLM_BASE_URL || 'https://openai-hub.neuraldeep.tech/v1',
+          llmModel: process.env.LLM_MODEL || 'qwen3-30b-a3b-instruct-2507',
+        },
+      }),
+    }).catch((err) => {
+      console.error(`Legacy n8n webhook failed for ${jobId}:`, err.message);
     });
-    attachmentMap[row.ref] = {
-      id: row.id,
-      localPath: row.storage_path,
-      mimeType: row.mime_type,
-      filename: row.original_name,
-    };
+  } catch (err) {
+    console.error(`triggerLegacyWebhook ${jobId} failed:`, err.message);
   }
-
-  return { attachments, attachmentMap };
-}
-
-function triggerWebhook(jobId, prompt, filePaths, userId, promptMeta, attachmentEntries = []) {
-  const { attachments, attachmentMap } = buildAttachmentPayload(attachmentEntries);
-
-  fetch(config.n8nWebhookUrl, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      jobId,
-      prompt,
-      filePaths,
-      userId,
-      promptMeta,
-      attachments,
-      attachmentMap,
-      _secrets: {
-        internalApiKey: config.internalApiKey,
-        llmApiKey: process.env.LLM_API_KEY || '',
-        llmBaseUrl: process.env.LLM_BASE_URL || 'https://openai-hub.neuraldeep.tech/v1',
-        llmModel: process.env.LLM_MODEL || 'qwen3-30b-a3b-instruct-2507',
-      },
-    }),
-  }).catch((err) => {
-    console.error(`n8n webhook failed for job ${jobId}:`, err.message);
-  });
 }
 
 module.exports = router;

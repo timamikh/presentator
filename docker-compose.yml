@@ -68,6 +68,7 @@ services:
       - SEED_USER_EMAIL=${SEED_USER_EMAIL}
       - SEED_USER_PASSWORD=${SEED_USER_PASSWORD}
       - N8N_WEBHOOK_URL=${N8N_WEBHOOK_URL}
+      - EXTRACTOR_BASE_URL=${EXTRACTOR_BASE_URL:-http://extractor-service:3003}
       - POSTGRES_USER=${POSTGRES_USER}
       - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
       - POSTGRES_DB=${POSTGRES_DB}
@@ -91,6 +92,29 @@ services:
       - shared_data:/data
     networks:
       - presentator-net
+
+  # -----------------------------------------------
+  # Extractor Service — PDF/DOCX/TXT → text + summary; image dimensions
+  # Stateless Python worker; api-service triggers it asynchronously after
+  # attachment upload and the worker writes results back via internal API.
+  # -----------------------------------------------
+  extractor-service:
+    build: ./extractor-service
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      - INTERNAL_API_KEY=${INTERNAL_API_KEY}
+      - API_BASE_URL=${API_BASE_URL:-http://api-service:3001}
+      - LIBRARY_ROOT=${LIBRARY_ROOT:-/data/library}
+      - EXTRACTOR_MAX_FILE_MB=${EXTRACTOR_MAX_FILE_MB:-20}
+      - EXTRACTOR_TEXT_LIMIT_CHARS=${EXTRACTOR_TEXT_LIMIT_CHARS:-50000}
+      - EXTRACTOR_SUMMARY_MAX_CHARS=${EXTRACTOR_SUMMARY_MAX_CHARS:-1500}
+    volumes:
+      - shared_data:/data
+    networks:
+      - presentator-net
+    depends_on:
+      - api-service
 
   # -----------------------------------------------
   # Frontend — Vue 3 SPA

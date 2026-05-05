@@ -32,7 +32,9 @@ describe('usePromptAggregator', () => {
       slidePrompts: slidePrompts.value,
       presentationSettings: presentationSettings.value,
       systemPrompt: 'System prompt',
-      attachments: []
+      attachments: [],
+      designBrief: null,
+      pipelineVersion: 2
     })
   })
 

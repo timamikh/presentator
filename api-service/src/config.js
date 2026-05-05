@@ -22,6 +22,8 @@ const config = {
   n8nWebhookUrl:
     process.env.N8N_WEBHOOK_URL ||
     'http://n8n:5678/webhook/presentator-pipeline',
+  extractorBaseUrl:
+    process.env.EXTRACTOR_BASE_URL || 'http://extractor-service:3003',
   port: parseInt(process.env.PORT, 10) || 3001,
   processingTimeoutMinutes: parseInt(process.env.PROCESSING_TIMEOUT_MINUTES, 10) || 8,
 };

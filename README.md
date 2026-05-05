@@ -2,6 +2,8 @@
 
 Микросервисное веб-приложение для генерации презентаций (PDF / PPTX) по текстовому промпту через LLM. Слайды генерируются как HTML/CSS, рендерятся Puppeteer, конвертируются в PDF и PPTX.
 
+С версии **pipeline v2** генерация декомпозирована на этапы **Планирование → Дизайн → Верстка → Рендер** с точками остановки между этапами и режимом доработки (Refinement). Старые задачи продолжают работать на однопроходном пайплайне (`pipeline_version=1`).
+
 ## Архитектура
 
 ```
@@ -12,31 +14,32 @@
                   │   /n8n/*      → n8n (Workflow Engine, :5678)          │
                   │   /converter/ → Converter Service (:3002)             │
                   └───────────────────────────────────────────────────────┘
-                        │                │                │
-                        ▼                ▼                ▼
-               ┌──────────────┐  ┌────────────┐  ┌──────────────┐
-               │ API Service  │  │    n8n     │  │   Frontend   │
-               │  (Express)   │  │            │  │  (Vue 3 +    │
-               │              │  │  Webhook ◀─┼──│   Vite)      │
-               │  Auth (JWT)  │  │  trigger   │  └──────────────┘
-               │  Jobs CRUD   │  │            │
-               │  Settings    │  │  LLM call  │
-               │  File upload │  │  Parse     │
-               └──────┬───────┘  │  Callback  │
-                      │          └─────┬──────┘
-                      ▼                │
-               ┌──────────────┐        ▼
-               │  PostgreSQL  │  ┌──────────────┐
-               │  (schemas:   │  │  Converter   │
-               │   n8n,       │  │  Service     │
-               │   presentator│  │  (Puppeteer  │
-               │  )           │  │  + pptxgenjs)│
-               └──────────────┘  └──────────────┘
-                      ▲                │
-                      │                ▼
-                 shared_data     /data/results/
-                   volume       ├── presentation.pdf
-                                └── presentation.pptx
+                        │           │           │            │
+                        ▼           ▼           ▼            ▼
+               ┌──────────────┐ ┌────────────┐ ┌──────────────┐ ┌──────────────┐
+               │ API Service  │ │    n8n     │ │   Frontend   │ │  Extractor   │
+               │  (Express)   │ │  Switch by │ │  (Vue 3 +    │ │   Service    │
+               │              │ │   stage    │ │   Vite)      │ │  (FastAPI)   │
+               │  Auth JWT    │ │  4 branches│ │              │ │              │
+               │  Jobs+stages │ │  (planning │ │  stepper UI  │ │  PDF/DOCX→   │
+               │  Prompts API │ │  /design/  │ │  reviews     │ │  text+summary│
+               │  File upload │ │   layout/  │ │  refine UI   │ │  PIL→ w×h    │
+               │  Extractor   │ │  refine)   │ │              │ │              │
+               │  trigger     │ │            │ │              │ │              │
+               └──────┬───────┘ └─────┬──────┘ └──────────────┘ └──────┬───────┘
+                      │               │                                │
+                      ▼               ▼                                │
+               ┌──────────────┐ ┌──────────────┐                       │
+               │  PostgreSQL  │ │  Converter   │                       │
+               │  (schemas:   │ │  Service     │                       │
+               │   n8n,       │ │  (Puppeteer  │                       │
+               │   presentator│ │  + pptxgenjs)│                       │
+               │  )           │ └─────┬────────┘                       │
+               └──────▲───────┘       │                                │
+                      │               ▼                                │
+                 shared_data     /data/results/                  shared_data
+                   volume       ├── presentation.pdf                   │
+                                └── presentation.pptx           /data/library/
 ```
 
 ### Сервисы
@@ -44,24 +47,36 @@
 | Сервис | Технологии | Порт | Назначение |
 |--------|-----------|------|------------|
 | **nginx** | Nginx 1.25 | 80 (внешний) | Reverse proxy, единая точка входа |
-| **api-service** | Node.js 22 + Express | 3001 | REST API: авторизация, задачи, настройки, хранилище вложений, отдача файлов |
-| **n8n** | n8n (latest) | 5678 | Оркестратор пайплайна: webhook, вызов LLM, парсинг, конвертер, callback'и |
+| **api-service** | Node.js 22 + Express | 3001 | REST API: авторизация, задачи, этапы пайплайна, настройки промтов, хранилище, дизайн-пресеты, отдача файлов |
+| **n8n** | n8n (latest) | 5678 | Оркестратор пайплайна: единый webhook + Switch по полю `stage`, 4 ветки (planning / design / layout / refine_layout) |
 | **converter-service** | Node.js + Puppeteer + pptxgenjs | 3002 | HTML-слайды → PDF (Puppeteer) + PPTX (скриншоты → pptxgenjs) |
-| **frontend** | Vue 3 + Vite + TailwindCSS | 80 (внутренний) | SPA: логин, создание задач, iframe-превью слайдов, скачивание PDF/PPTX |
+| **extractor-service** | Python 3.11 + FastAPI + pdfminer.six + python-docx + Pillow | 3003 (внутренний) | Извлечение текста из PDF/DOCX/TXT и метаданных изображений (w×h). Асинхронный воркер, дёргается api-service после загрузки вложения, пишет результат через internal API |
+| **frontend** | Vue 3 + Vite + TailwindCSS | 80 (внутренний) | SPA: логин, создание задач (DesignBriefForm), степпер этапов, ревью промежуточных результатов, доработка |
 | **postgres** | PostgreSQL 16 | 5432 | БД: схемы `n8n` и `presentator` |
 
-### Поток данных (pipeline)
+### Поток данных (staged pipeline v2)
 
-1. Пользователь вводит промпт, настраивает презентацию и прикрепляет файлы через **Frontend**
-2. **API Service** сохраняет задачу в БД (`status: pending`), загружает файлы в `/data/uploads/{job_id}/`, отправляет webhook в **n8n**
-3. **n8n** обновляет статус на `processing`, формирует prompt для LLM (системный промпт + CSS-фреймворк + пользовательский промпт)
-4. LLM возвращает JSON с HTML/CSS-слайдами
-5. **n8n** параллельно: сохраняет `llm_request` / `llm_response` и парсит ответ
-6. **n8n** сохраняет `slide_data` в БД через callback в API Service
-7. **n8n** отправляет `slide_data` в **Converter Service**
-8. **Converter Service** рендерит HTML через Puppeteer → генерирует PDF + PPTX
-9. **n8n** обновляет задачу: `status: done`, `result_paths: {pdf: ..., pptx: ...}`
-10. **Frontend** показывает iframe-превью слайдов и кнопки скачивания PDF/PPTX
+1. Пользователь вводит промпт, заполняет дизайн-бриф (тон / палитра / шрифты / layout / графика / референсы), выбирает вложения через **Frontend**.
+2. **API Service** создаёт задачу (`pipeline_version=2`, `status: pending`) и **триггерит первый webhook** в n8n с полем `stage='planning'`.
+3. **Этап 1 — Planning.** n8n собирает промт и зовёт LLM. LLM возвращает JSON со структурой слайдов (заголовки, блоки, спикерские заметки) **без дизайна**. n8n записывает результат в `jobs.planning_result` и переводит задачу в `awaiting_planning_review`.
+4. **Frontend** показывает структуру в `PlanningReview`, пользователь может править тексты и нажимает «Подтвердить и продолжить». Это вызывает `POST /api/jobs/:id/stages/design/start`, который инкрементит `attempt` и триггерит webhook со `stage='design'`.
+5. **Этап 2 — Design.** n8n получает структуру + дизайн-бриф пользователя, зовёт LLM. LLM возвращает JSON-ТЗ для верстальщика (палитра, шрифты, layout-классы, фон, декор по слайдам). Результат пишется в `jobs.design_brief`, задача переходит в `awaiting_design_review`.
+6. **Frontend** показывает дизайн-ТЗ в `DesignReview` (палитра-чипсы, образцы шрифтов, layout-метки), пользователь подтверждает запуск верстки.
+7. **Этап 3 — Layout.** n8n получает `planning_result` + `design_brief` + список вложений и зовёт LLM. LLM возвращает финальный `slide_data` (HTML/CSS) с плейсхолдерами `{{attachment:<ref>}}`.
+8. **Этап 4 — Render.** n8n шлёт `slide_data` в Converter Service → PDF + PPTX. Задача переводится в `done`.
+9. **(Опционально) Refinement.** Пользователь нажимает «Доработать» (всю презентацию или один слайд), указывает текст. `POST /api/jobs/:id/refine` создаёт новый attempt этапа `refine_layout`, n8n получает текущий `slide_data` + указание и пересобирает презентацию.
+
+Все шаги пишутся в `presentator.job_pipeline_steps` (по строке на attempt). История доступна через `GET /api/jobs/:id/steps`.
+
+### Извлечение текста из документов
+
+После загрузки документа в `POST /api/attachments` api-service делает fire-and-forget вызов в **extractor-service**, который:
+- Вытаскивает текст (pdfminer.six / python-docx / plain text decode).
+- Готовит `content_summary` (первые 1500 символов; в будущем — LLM-summarization).
+- Для изображений сохраняет ширину/высоту через Pillow.
+- Возвращает результат через `PATCH /api/attachments/internal/:id`.
+
+UI показывает статус извлечения бейджем в карточке вложения (`pending` / `done` / `failed`). При создании задачи `content_summary` подставляется в Stage 1 промт как «Summary», поэтому LLM видит контент документа без `base64`.
 
 ## Быстрый старт
 
@@ -107,6 +122,22 @@ docker compose up -d --build
 3. Импортировать `n8n-workflows/presentator-pipeline.json`
 4. Активировать workflow
 
+Альтернатива без UI (через CLI внутри контейнера n8n). Рекомендуется для воспроизводимости:
+
+```bash
+docker compose cp n8n-workflows/presentator-pipeline.json n8n:/tmp/presentator-pipeline.json
+docker compose exec -T n8n n8n import:workflow --input=/tmp/presentator-pipeline.json
+docker compose exec -T n8n n8n update:workflow --id=pres002 --active=true
+docker compose restart n8n
+```
+
+Важно: следите, чтобы **активным был ровно один** workflow на webhook, иначе один и тот же job может обрабатываться дважды:
+
+```bash
+docker compose exec -T postgres psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c \
+  "SELECT id, name, active FROM n8n.workflow_entity WHERE active=true;"
+```
+
 ## Структура проекта
 
 ```
@@ -119,13 +150,16 @@ presentator/
 │   └── nginx.conf
 │
 ├── init-db/
-│   ├── 01-schemas.sql          # Создание схем n8n и presentator
-│   ├── 02-users-table.sql      # Таблицы users и jobs
-│   ├── 03-settings-table.sql   # Таблица settings (key/value)
-│   ├── 04-result-paths.sql     # Колонка result_paths JSONB в jobs
-│   ├── 05-folders.sql          # Дерево папок хранилища (folders)
-│   ├── 06-attachments.sql      # Библиотека вложений (attachments)
-│   └── 07-job-attachments.sql  # Связь jobs ↔ attachments + snapshot описания
+│   ├── 01-schemas.sql                # Создание схем n8n и presentator
+│   ├── 02-users-table.sql            # Таблицы users и jobs
+│   ├── 03-settings-table.sql         # Таблица settings (key/value)
+│   ├── 04-result-paths.sql           # Колонка result_paths JSONB в jobs
+│   ├── 05-folders.sql                # Дерево папок хранилища (folders)
+│   ├── 06-attachments.sql            # Библиотека вложений (attachments)
+│   ├── 07-job-attachments.sql        # Связь jobs ↔ attachments + snapshot описания
+│   ├── 08-attachment-extraction.sql  # extraction_status / extracted_at / extraction_error
+│   ├── 09-pipeline-stages.sql        # pipeline_version, current_stage, planning_result, design_brief, design_input, job_pipeline_steps
+│   └── 10-design-presets.sql         # design_presets (сохранённые дизайн-брифы)
 │
 ├── api-service/
 │   ├── Dockerfile
@@ -138,14 +172,20 @@ presentator/
 │       │   └── auth.js          # JWT + internal API key
 │       ├── routes/
 │       │   ├── auth.js          # POST /api/auth/login
-│       │   ├── jobs.js          # CRUD задач, webhook trigger, скачивание
-│       │   ├── settings.js      # GET/PUT системного промпта
+│       │   ├── jobs.js          # CRUD задач, staged-pipeline эндпоинты, webhook trigger
+│       │   ├── settings.js      # GET/PUT промтов (4 ключа: planning/design/layout/refine) + legacy /system-prompt
 │       │   ├── folders.js       # CRUD дерева папок
-│       │   ├── attachments.js   # CRUD библиотеки вложений
-│       │   └── files.js         # GET /api/files/attachment/:id (приватная отдача)
+│       │   ├── attachments.js   # CRUD библиотеки + триггер extractor + internal callback
+│       │   ├── files.js         # GET /api/files/attachment/:id (приватная отдача)
+│       │   └── designPresets.js # CRUD сохранённых дизайн-брифов
+│       ├── services/
+│       │   ├── pipeline.js              # startStage / completeStage — ядро staged-пайплайна
+│       │   └── pipeline.test.js
 │       ├── utils/
 │       │   ├── attachmentTokens.js       # Подмена {{attachment:<ref>}} в HTML/CSS
-│       │   └── attachmentTokens.test.js
+│       │   ├── attachmentTokens.test.js
+│       │   ├── promptDefaults.js         # 4 дефолтных промта для этапов
+│       │   └── promptDefaults.test.js
 │       └── scripts/
 │           └── seed-user.js
 │
@@ -171,17 +211,27 @@ presentator/
 │       ├── components/
 │       │   ├── SlidePreview.vue         # iframe-превью с масштабированием
 │       │   ├── LlmLogViewer.vue         # Просмотр llm_request/llm_response
-│       │   ├── SystemPromptModal.vue    # Редактирование системного промпта
+│       │   ├── PromptsSettingsModal.vue # 4 таба: planning/design/layout/refine
+│       │   ├── SystemPromptModal.vue    # Legacy, оставлен для совместимости
 │       │   ├── SlidePromptsEditor.vue   # Промпты по отдельным слайдам
-│       │   ├── PresentationSettings.vue # Шрифты, цвета, стиль
+│       │   ├── PresentationSettings.vue # Legacy шрифты/цвета (для v1)
+│       │   ├── design/
+│       │   │   └── DesignBriefForm.vue  # Многотабный редактор дизайн-брифа
+│       │   ├── pipeline/
+│       │   │   ├── PipelineStepper.vue  # Степпер: Planning → Design → Layout → Render
+│       │   │   ├── PlanningReview.vue   # Ревью структуры (awaiting_planning_review)
+│       │   │   ├── DesignReview.vue     # Ревью дизайн-ТЗ (awaiting_design_review)
+│       │   │   └── RefinementPanel.vue  # «Доработать слайд / всю презентацию»
 │       │   └── storage/
 │       │       ├── FolderTree.vue       # Рекурсивный компонент дерева
-│       │       ├── AttachmentGrid.vue   # Грид с inline-редактированием описания
-│       │       └── StoragePicker.vue    # Модальный селектор вложений для CreateJob
+│       │       ├── AttachmentGrid.vue   # Грид + бейджи extraction_status
+│       │       └── StoragePicker.vue    # Модальный селектор вложений
 │       ├── composables/
-│       │   ├── usePromptAggregator.js   # Сборка payload для создания job
+│       │   ├── usePromptAggregator.js          # Payload (с designBrief, pipelineVersion)
 │       │   ├── usePromptAggregator.test.js
-│       │   └── useStorage.js            # CRUD-обёртки для хранилища
+│       │   ├── useDesignBriefAggregator.js     # JSON-бриф + текстовый preview
+│       │   ├── useDesignBriefAggregator.test.js
+│       │   └── useStorage.js                   # CRUD-обёртки для хранилища
 │       ├── utils/
 │       │   ├── assetPaths.js            # rewriteUploadAssetPaths + rewriteAttachmentTokens
 │       │   └── assetPaths.test.js
@@ -193,7 +243,19 @@ presentator/
 │           └── StorageView.vue          # Древовидное хранилище вложений
 │
 ├── n8n-workflows/
-│   └── presentator-pipeline.json
+│   └── presentator-pipeline.json    # v2: Switch по stage + 4 ветки
+│
+├── extractor-service/
+│   ├── Dockerfile
+│   ├── requirements.txt
+│   ├── pytest.ini
+│   ├── app/
+│   │   ├── main.py                  # FastAPI: POST /extract, /health
+│   │   ├── extract.py               # Pure: pdfminer / docx / txt / Pillow dispatch
+│   │   └── config.py                # Settings.from_env()
+│   └── tests/
+│       ├── test_extract.py
+│       └── test_main.py
 │
 └── service-llm/
     ├── agents.yaml
@@ -224,17 +286,39 @@ presentator/
 | file_paths | JSONB | Массив путей загруженных файлов |
 | slide_count | INTEGER | Желаемое кол-во слайдов |
 | slide_prompts | JSONB | Промпты для отдельных слайдов |
-| presentation_settings | JSONB | Настройки (шрифт, цвета) |
-| system_prompt | TEXT | Кастомный системный промпт (или NULL для дефолтного) |
-| status | VARCHAR(20) | `pending` → `processing` → `done` / `error` |
-| slide_data | JSONB | HTML/CSS слайды от LLM |
+| presentation_settings | JSONB | Legacy шрифты/цвета (используется для `pipeline_version=1`) |
+| system_prompt | TEXT | Per-job override layout-промта (или NULL для дефолтного) |
+| pipeline_version | INTEGER | `1` = старый однопроходный, `2` = staged (по умолчанию) |
+| current_stage | VARCHAR(30) | Текущая стадия для UI: `planning` / `design` / `layout` / `refine_layout` |
+| design_input | JSONB | Структурированный дизайн-бриф из формы (вход для Stage 2) |
+| planning_result | JSONB | Выход Stage 1 (структура слайдов + контент) |
+| design_brief | JSONB | Выход Stage 2 (палитра / шрифты / layout-инструкции) |
+| status | VARCHAR(20) | `pending` / `processing_*` / `awaiting_*_review` / `done` / `error` |
+| slide_data | JSONB | HTML/CSS слайды (выход Stage 3 / Refine) |
 | result_path | TEXT | Путь к PDF (для обратной совместимости) |
 | result_paths | JSONB | `{pdf: "...", pptx: "..."}` |
-| llm_request | JSONB | Сохранённый промпт к LLM |
-| llm_response | JSONB | Полный ответ LLM |
+| llm_request | JSONB | Снимок последнего layout/refine запроса (legacy log viewer) |
+| llm_response | JSONB | Снимок последнего layout/refine ответа |
 | error_message | TEXT | Текст ошибки |
 | created_at | TIMESTAMPTZ | Дата создания |
 | updated_at | TIMESTAMPTZ | Дата обновления |
+
+**job_pipeline_steps** — журнал выполнения этапов (по строке на attempt)
+
+| Колонка | Тип | Описание |
+|---------|-----|----------|
+| id | UUID (PK) | gen_random_uuid() |
+| job_id | UUID (FK → jobs, ON DELETE CASCADE) | |
+| stage | VARCHAR(30) | `planning` / `design` / `layout` / `refine_layout` / `render` |
+| attempt | INTEGER | Номер попытки (увеличивается при повторных запусках/refinement) |
+| status | VARCHAR(20) | `pending` / `running` / `done` / `error` |
+| input | JSONB | Снимок входа (опционально) |
+| output | JSONB | Результат этапа |
+| llm_request | JSONB | Полный prompt к LLM |
+| llm_response | JSONB | Полный ответ LLM |
+| error_message | TEXT | |
+| started_at / completed_at | TIMESTAMPTZ | |
+| `UNIQUE (job_id, stage, attempt)` | | Идемпотентность для callback'ов n8n |
 
 **settings**
 
@@ -243,7 +327,23 @@ presentator/
 | key | VARCHAR(100) PK | Ключ настройки |
 | value | TEXT | Значение |
 
-Ключ `default_system_prompt` — системный промпт по умолчанию. Если пуст, API отдаёт встроенный `DEFAULT_SYSTEM_PROMPT` из `settings.js`.
+Ключи системных промтов (по одному на этап staged-пайплайна):
+- `default_planning_prompt` — этап 1, структура и контент.
+- `default_design_prompt` — этап 2, дизайн-ТЗ.
+- `default_layout_prompt` — этап 3, финальная HTML/CSS-верстка.
+- `default_refine_prompt` — режим доработки.
+
+Если ключ пуст, API сидит дефолтное значение из `api-service/src/utils/promptDefaults.js`. Старый ключ `default_system_prompt` отмаплен на `default_layout_prompt` (для обратной совместимости с legacy эндпоинтом `/api/settings/system-prompt`).
+
+**design_presets** — сохранённые пользователем дизайн-брифы
+
+| Колонка | Тип | Описание |
+|---------|-----|----------|
+| id | UUID (PK) | gen_random_uuid() |
+| user_id | UUID (FK → users, ON DELETE CASCADE) | |
+| name | VARCHAR(120) | Название пресета (уникально в рамках пользователя) |
+| brief_json | JSONB | Структурированный бриф из `DesignBriefForm` |
+| created_at / updated_at | TIMESTAMPTZ | |
 
 **folders** — древовидная структура папок хранилища (произвольная глубина)
 
@@ -269,9 +369,12 @@ presentator/
 | file_size | BIGINT | |
 | kind | VARCHAR(20) | `image` / `document` / `other` |
 | description | TEXT | Описание для LLM |
-| extracted_text | TEXT | (Резерв) текст из документа после предобработки |
-| content_summary | TEXT | (Резерв) сжатое описание контента |
-| width / height | INTEGER | Только для изображений |
+| extracted_text | TEXT | Сырой текст из документа (заполняется extractor-service) |
+| content_summary | TEXT | Краткое резюме контента (1–3 абзаца), идёт в Stage 1 промт |
+| extraction_status | VARCHAR(20) | `pending` / `processing` / `done` / `failed` / `skipped` |
+| extracted_at | TIMESTAMPTZ | Когда extractor отработал |
+| extraction_error | TEXT | Текст ошибки, если `failed` |
+| width / height | INTEGER | Только для изображений (заполняется Pillow) |
 | created_at / updated_at | TIMESTAMPTZ | |
 
 Файлы лежат **плоско** в `/data/library/<user_id>/`. Папки — только в БД, поэтому перемещение между папками — это `UPDATE folder_id` без файлового I/O.
@@ -368,47 +471,70 @@ LLM генерирует HTML/CSS-слайды в JSON-формате:
 | Метод | Путь | Описание |
 |-------|------|----------|
 | GET | /api/jobs | Список задач текущего пользователя |
-| POST | /api/jobs | Создать задачу (multipart: prompt, slideCount, slidePrompts, presentationSettings, systemPrompt, files) |
-| GET | /api/jobs/:id | Детали задачи (включая slide_data, llm_request, llm_response) |
+| POST | /api/jobs | Создать задачу (multipart: prompt, slideCount, slidePrompts, presentationSettings, systemPrompt, designBrief, pipelineVersion, files, attachments) |
+| GET | /api/jobs/:id | Детали задачи (slide_data, planning_result, design_brief, llm_request/response, attachments) |
+| GET | /api/jobs/:id/steps | Все шаги пайплайна (журнал per-attempt) |
+| POST | /api/jobs/:id/stages/:stage/start | Запустить этап staged-пайплайна (`design` / `layout` / `planning` / `refine_layout`). Body: `{planning_result?, design_brief?, refinePrompt?, slideIndex?}` |
+| POST | /api/jobs/:id/refine | Доработка: `{prompt, slideIndex?}` → новый attempt этапа `refine_layout` |
 | GET | /api/jobs/:id/download?format=pdf\|pptx | Скачать результат (по умолчанию pdf) |
 | GET | /api/jobs/uploads/:jobId/* | Приватная отдача файлов задачи (Bearer или `?token=`) |
-| GET | /api/settings/system-prompt | Получить системный промпт |
-| PUT | /api/settings/system-prompt | Обновить системный промпт |
+| GET | /api/settings/prompts | Все 4 системных промта одним блоком |
+| GET | /api/settings/prompts/:key | Один промт (`default_planning_prompt` / `default_design_prompt` / `default_layout_prompt` / `default_refine_prompt`) |
+| PUT | /api/settings/prompts/:key | Обновить промт |
+| POST | /api/settings/prompts/:key/reset | Сбросить промт к дефолту |
+| GET | /api/settings/system-prompt | **Deprecated**, мапит на `default_layout_prompt` |
+| PUT | /api/settings/system-prompt | **Deprecated**, мапит на `default_layout_prompt` |
 | GET | /api/folders | Дерево папок текущего пользователя |
 | POST | /api/folders | Создать папку `{name, parentId?}` |
 | PATCH | /api/folders/:id | Переименовать / переместить (с защитой от циклов) |
 | DELETE | /api/folders/:id?force=true | Удалить (по умолчанию 409 если непуста) |
-| GET | /api/attachments?folderId=&q=&kind= | Список вложений (folderId: `root` / UUID / `all`) |
-| POST | /api/attachments | Загрузить вложение в библиотеку (multipart) |
+| GET | /api/attachments?folderId=&q=&kind= | Список вложений (включая `extraction_status`) |
+| POST | /api/attachments | Загрузить вложение (триггерит extractor-service асинхронно) |
 | PATCH | /api/attachments/:id | Обновить description / folderId / original_name |
+| POST | /api/attachments/:id/reextract | Повторно прогнать через extractor (`extraction_status='pending'` + force) |
 | DELETE | /api/attachments/:id?force=true | Удалить (по умолчанию 409 если используется в jobs) |
 | GET | /api/files/attachment/:id | Приватная отдача вложения (Bearer или `?token=`) |
+| GET | /api/design-presets | Список сохранённых дизайн-брифов пользователя |
+| POST | /api/design-presets | Создать/обновить пресет `{name, brief}` (uniq by `(user_id, name)`) |
+| PATCH | /api/design-presets/:id | Переименовать / обновить бриф |
+| DELETE | /api/design-presets/:id | Удалить пресет |
 
-### Внутренний (X-Internal-Key) эндпоинт
+### Внутренние (X-Internal-Key) эндпоинты
 
 | Метод | Путь | Описание |
 |-------|------|----------|
-| PATCH | /api/jobs/internal/:id | Обновление из n8n: status, slideData, resultPath, resultPaths, llmRequest, llmResponse, errorMessage |
+| PATCH | /api/jobs/internal/:id | Legacy: status / slideData / resultPath / resultPaths / llmRequest / llmResponse / errorMessage. Используется для converter-callback'ов и pipeline_version=1 |
+| PATCH | /api/jobs/internal/:id/steps/:stage | Завершить этап staged-пайплайна `{output, llmRequest, llmResponse, errorMessage}` |
+| GET | /api/attachments/internal/:id | Получить полные данные вложения (для extractor-service) |
+| PATCH | /api/attachments/internal/:id | Записать результат extraction `{extractionStatus, extractedText?, contentSummary?, extractionError?, width?, height?}` |
 
-## n8n Workflow
+## n8n Workflow (v2)
 
 Файл: `n8n-workflows/presentator-pipeline.json`
 
-Ноды пайплайна:
+Workflow устроен как **Switch по полю `body.stage`** (planning / design / layout / refine_layout) с одним общим webhook'ом. Каждая ветка изолирована и состоит из одинаковой последовательности из 4 нод:
 
-1. **Webhook** — принимает POST от API (`$json.body.jobId`, `$json.body.prompt`, `$json.body._secrets`)
-2. **Update Status to Processing** — PATCH `/api/jobs/internal/{jobId}` → `{status: "processing"}`
-3. **Build LLM Prompt** — собирает systemPrompt + userMessage из webhook data; агрегирует slideCount, slidePrompts, presentationSettings
-4. **Call LLM API** — POST к LLM (OpenAI-совместимый `/chat/completions`)
-5. **Save LLM Logs** (параллельно) — сохраняет llm_request / llm_response в БД
-6. **Parse LLM Response** — парсит JSON из LLM, валидирует `slides[].html`
-7. **Save Slide Data** — сохраняет slide_data в БД
-8. **Call Converter** — POST `/convert` → PDF + PPTX
-9. **Update Status Done** — сохраняет `result_paths` и `status: done`
+```
+Webhook → Switch by Stage ┬─► Build Planning Prompt → LLM Planning → Parse Planning → Save Planning Step
+                          ├─► Build Design Prompt   → LLM Design   → Parse Design   → Save Design Step
+                          ├─► Build Layout Prompt   → LLM Layout   → Parse Layout   → Save Layout Step  → Convert (layout)  → Mark Done (layout)
+                          └─► Build Refine Prompt   → LLM Refine   → Parse Refine   → Save Refine Step  → Convert (refine)  → Mark Done (refine)
+```
 
-Error-ветка: **Error Trigger** → **Extract Error Info** → **Update Status Error**
+`Save *` ноды дёргают новый эндпоинт `PATCH /api/jobs/internal/:jobId/steps/:stage` с `{ output, llmRequest, llmResponse, errorMessage }`. Ветки `layout` и `refine_layout` дополнительно вызывают converter-service и закрывают задачу через legacy `PATCH /api/jobs/internal/:id { status: 'done', resultPaths }`.
 
-Секреты передаются через webhook payload (`_secrets.internalApiKey`, `_secrets.llmApiKey`, `_secrets.llmBaseUrl`, `_secrets.llmModel`), т.к. n8n v2+ ограничивает `$env`.
+Error-ветка: **Error Trigger** → **Extract Error Info** → **Update Status Error** — без изменений.
+
+Секреты по-прежнему идут через `body._secrets` (`internalApiKey`, `llmApiKey`, `llmBaseUrl`, `llmModel`).
+
+### Импорт обновлённого workflow
+
+После каждого изменения `n8n-workflows/presentator-pipeline.json` workflow нужно реимпортировать:
+
+1. `http://localhost/n8n/` → Workflows.
+2. Открыть текущий workflow → Settings → Delete (или сохранить старую версию через export).
+3. Workflows → Import from file → выбрать `n8n-workflows/presentator-pipeline.json`.
+4. Активировать.
 
 ## Переменные окружения
 
@@ -424,7 +550,20 @@ Error-ветка: **Error Trigger** → **Extract Error Info** → **Update Stat
 | `LLM_MODEL` | Название модели |
 | `SEED_USER_EMAIL` / `SEED_USER_PASSWORD` | Seed-пользователь |
 | `N8N_WEBHOOK_URL` | URL webhook'а n8n (по умолчанию `http://n8n:5678/webhook/presentator-pipeline`) |
+| `EXTRACTOR_BASE_URL` | URL extractor-service из api-service (default `http://extractor-service:3003`) |
+| `API_BASE_URL` | URL api-service из extractor-service (default `http://api-service:3001`) |
+| `EXTRACTOR_MAX_FILE_MB` | Лимит размера документа на извлечение (default `20`) |
+| `EXTRACTOR_TEXT_LIMIT_CHARS` | Максимум символов сырого `extracted_text` (default `50000`) |
+| `EXTRACTOR_SUMMARY_MAX_CHARS` | Максимум символов `content_summary` (default `1500`) |
 | `PROCESSING_TIMEOUT_MINUTES` | Таймаут job в статусе `processing`, после которого API помечает задачу как `error` |
+
+### Экономия токенов (важно)
+
+Лимиты `max_tokens` задаются в `n8n-workflows/presentator-pipeline.json` (LLM Planning/Design/Layout/Refine).
+Если вы упираетесь в лимиты, сначала уменьшайте число слайдов и `max_tokens`, и только потом усложняйте промты.
+
+Для reasoning‑моделей используйте `chat_template_kwargs: { enable_thinking: false }` (workflow уже содержит это),
+иначе модель может вернуть JSON в `reasoning_content` или оборвать ответ.
 
 ## Просмотр логов
 
@@ -499,22 +638,36 @@ PDF / PPTX                                Iframe preview
 # Dev: проще сбросить БД целиком
 docker compose down -v && docker compose up -d --build
 
-# Prod: выполнить новые SQL вручную
+# Prod: выполнить новые SQL вручную (для уже инициализированной БД)
 docker compose exec -T postgres \
   psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -f - < init-db/05-folders.sql
 docker compose exec -T postgres \
   psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -f - < init-db/06-attachments.sql
 docker compose exec -T postgres \
   psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -f - < init-db/07-job-attachments.sql
+docker compose exec -T postgres \
+  psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -f - < init-db/08-attachment-extraction.sql
+docker compose exec -T postgres \
+  psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -f - < init-db/09-pipeline-stages.sql
+docker compose exec -T postgres \
+  psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -f - < init-db/10-design-presets.sql
 ```
 
 ## Контекст для LLM (доработки)
 
 ### Ключевые архитектурные решения
 
+- **Staged pipeline (v2)**: генерация разбита на Planning → Design → Layout → Render. Между этапами — точки остановки (`awaiting_planning_review`, `awaiting_design_review`), где пользователь подтверждает или правит промежуточный результат. Каждый этап логируется отдельной строкой в `job_pipeline_steps` (по строке на attempt → история refinement сохраняется). Старые задачи с `pipeline_version=1` продолжают работать на однопроходном workflow (n8n Switch falls through to legacy branch).
+
+- **Per-stage prompts**: четыре независимых системных промта (`default_planning_prompt`, `default_design_prompt`, `default_layout_prompt`, `default_refine_prompt`). Дефолты — в `api-service/src/utils/promptDefaults.js`, переопределяются через `/api/settings/prompts/:key`. Стартовая логика staged-пайплайна — в `api-service/src/services/pipeline.js` (`startStage` / `completeStage`).
+
+- **Design brief как структурированный объект**: фронтенд (`DesignBriefForm.vue` + `useDesignBriefAggregator.js`) собирает тон / палитру / шрифты / layout / графику / референсы в JSON и в текстовый preview. Объект пишется в `jobs.design_input` и подаётся в Stage 2. Пресеты сохраняются в `presentator.design_presets`.
+
+- **Extractor as separate service**: PDF / DOCX / TXT извлекаются Python-сервисом `extractor-service` (FastAPI + pdfminer.six + python-docx + Pillow). api-service триггерит его fire-and-forget после `POST /api/attachments`; результат пишется в `attachments.extracted_text` / `content_summary`. Размер сырого текста ограничен (`EXTRACTOR_TEXT_LIMIT_CHARS`), summary — отдельным лимитом для контекста LLM.
+
 - **HTML/CSS-слайды**: LLM генерирует полноценный HTML/CSS для каждого слайда (1920×1080). Используется CSS-фреймворк (`slide-framework.css`) для единообразия. Конвертер рендерит HTML через Puppeteer и создаёт PDF + PPTX (скриншоты).
 
-- **n8n как оркестратор**: Логика пайплайна реализована в n8n workflow, не в коде. Workflow хранится в `n8n-workflows/presentator-pipeline.json`. При обновлении — реимпорт через UI n8n или API n8n (не через прямое обновление SQL).
+- **n8n как оркестратор**: Логика пайплайна реализована в n8n workflow, не в коде. Workflow хранится в `n8n-workflows/presentator-pipeline.json` и устроен как Switch по полю `body.stage`. Каждый этап (planning / design / layout / refine_layout) — изолированный набор из 4 нод (Build Prompt → LLM → Parse → Save Step). При обновлении — реимпорт через UI n8n.
 
 - **Секреты через webhook payload**: n8n v2+ ограничивает `$env`. API передаёт секреты в теле webhook как `_secrets`. Workflow читает их через `$json.body._secrets`.
 
@@ -522,7 +675,7 @@ docker compose exec -T postgres \
 
 - **Iframe-превью**: `SlidePreview.vue` загружает CSS-фреймворк с `/converter/framework.css` и рендерит слайды в `<iframe srcdoc>` с масштабированием через `ResizeObserver`.
 
-- **Системный промпт**: хранится в `presentator.settings` (`key='default_system_prompt'`). Если пуст — API отдаёт встроенный `DEFAULT_SYSTEM_PROMPT` из `api-service/src/routes/settings.js`. Пользователь может переопределить промпт в модалке создания задачи. К итоговому system-prompt n8n добавляет блок ATTACHMENT_RULES (правила работы с `{{attachment:<ref>}}`).
+- **Системные промты (v2)**: 4 ключа в `presentator.settings`. Дефолты — в `api-service/src/utils/promptDefaults.js`, отдаются API при первом запросе и могут быть переопределены через `/api/settings/prompts/:key`. К промту этапа `layout` n8n добавляет блок ATTACHMENT_RULES (правила работы с `{{attachment:<ref>}}`). Per-job override (поле `jobs.system_prompt`) применяется только к `layout` для совместимости с legacy UI.
 
 - **Хранилище вложений**: древовидное (`presentator.folders` — рекурсивная self-FK), плоское на диске (`/data/library/<user_id>/<id>_<safe_name>`). Связь с задачами — через `job_attachments` со snapshot-копией описания.
 
@@ -546,14 +699,19 @@ docker compose exec -T postgres \
 - **LLM текстовая, не мультимодальная**: Изображения передаются через метаданные + плейсхолдеры `{{attachment:<ref>}}` (см. секцию «Хранилище вложений»). LLM не «видит» картинки, но размещает их в HTML по описаниям пользователя.
 - **Один воркер n8n**: Для масштабирования → n8n queue mode
 - **PPTX = скриншоты**: Текст в PPTX не редактируемый (растровые изображения)
+- **Время генерации**: 3 LLM-вызова в staged pipeline → суммарное время x3 vs. legacy. Состояние видно в UI через степпер; HTTP-таймауты у LLM-нод n8n подняты до 180–240с.
+- **Refinement пока только для layout**: режим доработки на текущем этапе ре-генерирует только финальный HTML. Refinement планирования / дизайна планируется как следующий шаг.
+- **Document summarization**: на первом этапе extractor подаёт `content_summary = первые 1500 символов`. LLM-summarization (через тот же `_secrets`) — следующий шаг.
 
 ### Частые задачи при доработке
 
 - **Изменить CSS-фреймворк слайдов**: `converter-service/src/slide-framework.css`
 - **Изменить HTML-шаблон слайдов**: `converter-service/src/slide-template.html`
-- **Изменить системный промпт по умолчанию**: `api-service/src/routes/settings.js` → `DEFAULT_SYSTEM_PROMPT`
+- **Изменить дефолтные промты**: `api-service/src/utils/promptDefaults.js`
+- **Добавить новый этап в пайплайн**: новая ветка в Switch + новая нода Build/Parse/Save в `n8n-workflows/presentator-pipeline.json`; добавить значение в `STAGES` в `api-service/src/services/pipeline.js`; добавить step в `frontend/src/components/pipeline/PipelineStepper.vue`.
 - **Изменить workflow n8n**: редактировать в UI n8n, экспортировать в `n8n-workflows/presentator-pipeline.json`
-- **Добавить новую таблицу/колонку**: создать SQL-файл в `init-db/` (нумерация: `05-...sql`)
+- **Добавить новую таблицу/колонку**: создать SQL-файл в `init-db/` (нумерация: `08-...sql`)
+- **Добавить нового extractor**: расширить `extractor-service/app/extract.py` (новый формат → новый dispatch case + тест)
 - **Пересобрать сервис**: `docker compose up -d --build <service-name>`
 
 ### Папка service-llm

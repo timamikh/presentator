@@ -3,13 +3,34 @@ const multer = require('multer');
 const path = require('path');
 const fs = require('fs');
 const crypto = require('crypto');
+const fetch = require('node-fetch');
 const { v4: uuidv4 } = require('uuid');
+const config = require('../config');
 const { pool, query } = require('../db');
-const { authRequired } = require('../middleware/auth');
+const { authRequired, internalAuth } = require('../middleware/auth');
 
 const LIBRARY_DIR = path.join('/data', 'library');
 const REF_PREFIX = 'att_';
 const MAX_DESCRIPTION_LENGTH = 4000;
+const MAX_EXTRACTED_TEXT_LENGTH = 200_000;
+const EXTRACTION_STATUSES = ['pending', 'processing', 'done', 'failed', 'skipped'];
+
+// Fire-and-forget HTTP call to the Python extractor. Failures are logged but
+// never propagated — the upload itself must succeed even when the worker is
+// unreachable (idempotent re-tries can be triggered manually via ?force=true).
+function triggerExtraction(attachmentId, { force = false } = {}) {
+  const url = `${config.extractorBaseUrl}/extract`;
+  fetch(url, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'X-Internal-Key': config.internalApiKey,
+    },
+    body: JSON.stringify({ attachmentId, force }),
+  }).catch((err) => {
+    console.warn(`extractor trigger failed for ${attachmentId}: ${err.message}`);
+  });
+}
 
 function ensureDir(dir) {
   fs.mkdirSync(dir, { recursive: true });
@@ -120,7 +141,8 @@ router.get('/', authRequired, async (req, res) => {
     const result = await query(
       `SELECT
          id, folder_id, ref, original_name, mime_type, file_size, kind,
-         description, width, height, created_at, updated_at
+         description, width, height, extraction_status, extracted_at,
+         extraction_error, content_summary, created_at, updated_at
        FROM presentator.attachments
        WHERE ${clauses.join(' AND ')}
        ORDER BY created_at DESC`,
@@ -172,11 +194,12 @@ router.post('/', authRequired, upload.single('file'), async (req, res) => {
       const inserted = await query(
         `INSERT INTO presentator.attachments (
            id, user_id, folder_id, ref, original_name, storage_path,
-           mime_type, file_size, kind, description
+           mime_type, file_size, kind, description, extraction_status
          )
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 'pending')
          RETURNING id, folder_id, ref, original_name, mime_type, file_size, kind,
-                   description, width, height, created_at, updated_at`,
+                   description, width, height, extraction_status, extracted_at,
+                   extraction_error, content_summary, created_at, updated_at`,
         [
           id,
           req.user.id,
@@ -190,6 +213,12 @@ router.post('/', authRequired, upload.single('file'), async (req, res) => {
           description,
         ],
       );
+
+      // Asynchronously kick off extraction. The user gets a 201 immediately;
+      // the worker writes back extracted_text / content_summary / dimensions
+      // via PATCH /api/attachments/internal/:id.
+      triggerExtraction(id);
+
       return res.status(201).json(inserted.rows[0]);
     } catch (err) {
       try { fs.unlinkSync(finalPath); } catch {}
@@ -256,7 +285,8 @@ router.patch('/:id', authRequired, async (req, res) => {
        SET ${sets.join(', ')}
        WHERE id = $${idx++} AND user_id = $${idx}
        RETURNING id, folder_id, ref, original_name, mime_type, file_size, kind,
-                 description, width, height, created_at, updated_at`,
+                 description, width, height, extraction_status, extracted_at,
+                 extraction_error, content_summary, created_at, updated_at`,
       params,
     );
 
@@ -267,6 +297,153 @@ router.patch('/:id', authRequired, async (req, res) => {
     return res.json(result.rows[0]);
   } catch (err) {
     console.error('Update attachment error:', err.message);
+    return res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// POST /api/attachments/:id/reextract — manual re-trigger for the worker.
+// Useful when extraction failed transiently or when the file was replaced.
+router.post('/:id/reextract', authRequired, async (req, res) => {
+  try {
+    const result = await query(
+      `UPDATE presentator.attachments
+       SET extraction_status = 'pending',
+           extraction_error = NULL,
+           updated_at = now()
+       WHERE id = $1 AND user_id = $2
+       RETURNING id, extraction_status`,
+      [req.params.id, req.user.id],
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'Attachment not found' });
+    }
+
+    triggerExtraction(req.params.id, { force: true });
+    return res.json(result.rows[0]);
+  } catch (err) {
+    console.error('Re-extract error:', err.message);
+    return res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// ── Internal callback for extractor-service ──────────────────────────
+// PATCH /api/attachments/internal/:id  body: { extractionStatus, extractedText?,
+//                                              contentSummary?, extractionError?,
+//                                              width?, height? }
+// GET   /api/attachments/internal/:id  → row needed by the worker
+router.get('/internal/:id', internalAuth, async (req, res) => {
+  try {
+    const result = await query(
+      `SELECT id, user_id, folder_id, ref, original_name, storage_path, mime_type,
+              file_size, kind, description, extraction_status, extracted_at,
+              extraction_error, content_summary, width, height
+       FROM presentator.attachments
+       WHERE id = $1`,
+      [req.params.id],
+    );
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'Attachment not found' });
+    }
+    return res.json(result.rows[0]);
+  } catch (err) {
+    console.error('Internal get attachment error:', err.message);
+    return res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+router.patch('/internal/:id', internalAuth, async (req, res) => {
+  try {
+    const sets = [];
+    const params = [];
+    let idx = 1;
+
+    if (req.body?.extractionStatus !== undefined) {
+      const value = String(req.body.extractionStatus);
+      if (!EXTRACTION_STATUSES.includes(value)) {
+        return res.status(400).json({
+          error: `extractionStatus must be one of: ${EXTRACTION_STATUSES.join(', ')}`,
+        });
+      }
+      sets.push(`extraction_status = $${idx++}`);
+      params.push(value);
+      if (value === 'done' || value === 'skipped') {
+        sets.push(`extracted_at = now()`);
+      }
+    }
+
+    if (req.body?.extractedText !== undefined) {
+      let value = req.body.extractedText;
+      if (value !== null) {
+        if (typeof value !== 'string') {
+          return res.status(400).json({ error: 'extractedText must be string or null' });
+        }
+        if (value.length > MAX_EXTRACTED_TEXT_LENGTH) {
+          value = value.slice(0, MAX_EXTRACTED_TEXT_LENGTH);
+        }
+      }
+      sets.push(`extracted_text = $${idx++}`);
+      params.push(value);
+    }
+
+    if (req.body?.contentSummary !== undefined) {
+      const value = req.body.contentSummary;
+      if (value !== null && typeof value !== 'string') {
+        return res.status(400).json({ error: 'contentSummary must be string or null' });
+      }
+      sets.push(`content_summary = $${idx++}`);
+      params.push(value);
+    }
+
+    if (req.body?.extractionError !== undefined) {
+      const value = req.body.extractionError;
+      if (value !== null && typeof value !== 'string') {
+        return res.status(400).json({ error: 'extractionError must be string or null' });
+      }
+      sets.push(`extraction_error = $${idx++}`);
+      params.push(value);
+    }
+
+    if (req.body?.width !== undefined) {
+      const value = req.body.width === null ? null : Number(req.body.width);
+      if (value !== null && !Number.isFinite(value)) {
+        return res.status(400).json({ error: 'width must be a number or null' });
+      }
+      sets.push(`width = $${idx++}`);
+      params.push(value === null ? null : Math.round(value));
+    }
+
+    if (req.body?.height !== undefined) {
+      const value = req.body.height === null ? null : Number(req.body.height);
+      if (value !== null && !Number.isFinite(value)) {
+        return res.status(400).json({ error: 'height must be a number or null' });
+      }
+      sets.push(`height = $${idx++}`);
+      params.push(value === null ? null : Math.round(value));
+    }
+
+    if (sets.length === 0) {
+      return res.status(400).json({ error: 'No fields to update' });
+    }
+
+    sets.push(`updated_at = now()`);
+    params.push(req.params.id);
+
+    const result = await query(
+      `UPDATE presentator.attachments
+       SET ${sets.join(', ')}
+       WHERE id = $${idx}
+       RETURNING id, ref, kind, mime_type, extraction_status, extracted_at,
+                 extraction_error, content_summary, width, height`,
+      params,
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'Attachment not found' });
+    }
+    return res.json(result.rows[0]);
+  } catch (err) {
+    console.error('Internal update attachment error:', err.message);
     return res.status(500).json({ error: 'Internal server error' });
   }
 });

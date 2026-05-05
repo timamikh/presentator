@@ -1,6 +1,6 @@
 {
-  "id": "pres001",
-  "name": "Presentator Pipeline",
+  "id": "pres002",
+  "name": "Presentator Pipeline v2",
   "nodes": [
     {
       "parameters": {
@@ -9,46 +9,179 @@
         "responseMode": "onReceived",
         "options": {}
       },
-      "id": "f8a3b2c1-4e5d-4a6b-9c8d-1a2b3c4d5e6f",
+      "id": "wh-001",
       "name": "Webhook",
       "type": "n8n-nodes-base.webhook",
       "typeVersion": 1.1,
-      "position": [250, 300],
+      "position": [
+        200,
+        400
+      ],
       "webhookId": "e1f2a3b4-5c6d-4e7f-8091-e1f2a3b4c5d6"
     },
     {
       "parameters": {
-        "method": "PATCH",
-        "url": "=http://api-service:3001/api/jobs/internal/{{ $json.body.jobId }}",
-        "sendHeaders": true,
-        "headerParameters": {
-          "parameters": [
+        "rules": {
+          "values": [
             {
-              "name": "X-Internal-Key",
-              "value": "={{ $json.body._secrets.internalApiKey }}"
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict"
+                },
+                "conditions": [
+                  {
+                    "id": "r1",
+                    "leftValue": "={{ $json.body.stage }}",
+                    "rightValue": "planning",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "planning"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict"
+                },
+                "conditions": [
+                  {
+                    "id": "r2",
+                    "leftValue": "={{ $json.body.stage }}",
+                    "rightValue": "design",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "design"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict"
+                },
+                "conditions": [
+                  {
+                    "id": "r3",
+                    "leftValue": "={{ $json.body.stage }}",
+                    "rightValue": "layout",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "layout"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict"
+                },
+                "conditions": [
+                  {
+                    "id": "r4",
+                    "leftValue": "={{ $json.body.stage }}",
+                    "rightValue": "refine_layout",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "refine_layout"
             }
           ]
         },
-        "sendBody": true,
-        "specifyBody": "json",
-        "jsonBody": "{\"status\": \"processing\"}",
-        "options": {}
+        "options": {
+          "fallbackOutput": "extra",
+          "renameFallbackOutput": "legacy"
+        }
       },
-      "id": "a1b2c3d4-5e6f-4a7b-8c9d-a1b2c3d4e5f6",
-      "name": "Update Status to Processing",
-      "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4.2,
-      "position": [500, 300]
+      "id": "switch-stage",
+      "name": "Switch by Stage",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.2,
+      "position": [
+        420,
+        400
+      ]
     },
     {
       "parameters": {
-        "jsCode": "const input = $input.first().json;\nconst webhookData = $('Webhook').first().json.body;\nconst prompt = webhookData.prompt;\nconst filePaths = webhookData.filePaths || [];\nconst jobId = webhookData.jobId;\nconst secrets = webhookData._secrets || {};\nconst promptMeta = webhookData.promptMeta || {};\nconst attachments = Array.isArray(webhookData.attachments) ? webhookData.attachments : [];\nconst attachmentMap = (webhookData.attachmentMap && typeof webhookData.attachmentMap === 'object') ? webhookData.attachmentMap : {};\n\nlet systemPrompt = promptMeta.systemPrompt;\nif (!systemPrompt || typeof systemPrompt !== 'string' || !systemPrompt.trim()) {\n  systemPrompt = 'You are an expert presentation designer. You create visually stunning HTML/CSS slides rendered at 1920×1080 px.\\n\\nOUTPUT FORMAT — return ONLY valid JSON (no markdown, no code fences):\\n{\\n  \"theme\": {\\n    \"css\": \":root { --primary: #2563eb; --font-heading: \\'Inter\\', sans-serif; }\",\\n    \"fonts\": [\"Inter\"]\\n  },\\n  \"slides\": [\\n    {\\n      \"html\": \"<div class=\\'centered\\'><h1 class=\\'heading-xl\\'>Title</h1></div>\",\\n      \"css\": \"\",\\n      \"notes\": \"Speaker notes (optional)\"\\n    }\\n  ]\\n}\\n\\nCSS FRAMEWORK — each slide is a <div class=\"slide\"> (1920×1080, padding 80px). You have these utilities:\\n\\nVariables (override in theme.css): --primary, --primary-light, --primary-dark, --bg, --bg-alt, --text, --text-light, --text-muted, --accent, --success, --danger, --font-heading, --font-body, --font-mono.\\n\\nLayouts: .centered (flex center), .top-title (title + flex body), .split-2 / .split-3 (grid columns), .split-left-wide / .split-right-wide (2:1 / 1:2 grid).\\n\\nTypography: .heading-xl (72px bold), .heading-lg (52px), .heading-md (40px), .heading-sm (32px), .subtitle (32px light), .body-text (28px), .body-lg (32px), .caption (20px), .small (18px), .bold, .semibold, .uppercase.\\n\\nComponents: .card (bg-alt rounded box), .card-bordered, .card-primary (primary bg white text), .accent-line (80px colored bar), .divider, .tag (primary pill), .tag-outline, .icon-circle / .icon-circle-lg (round icon container), .number-big (96px stat), .quote (left-bordered italic), .code-block (dark mono block).\\n\\nLists: .bullets (styled ul), .bullets-lg, .numbered (auto-numbered circles).\\n\\nTables: .table (styled with colored header, striped rows).\\n\\nCharts: .bar-container + .bar (horizontal bars), .stat-value (64px number) + .stat-label.\\n\\nBackgrounds: .bg-primary, .bg-dark, .bg-gradient, .bg-gradient-light, .bg-alt. Dark backgrounds auto-adjust text and bullet colors.\\n\\nSpacing: .mt-1..mt-4 (16–64px), .mb-1..mb-3, .gap-1..gap-4, .p-1..p-3, .w-full, .h-full.\\n\\nImages: .img-contain, .img-cover, .img-rounded.\\n\\nDESIGN RULES:\\n- Slide HTML goes INSIDE the .slide container (wrapper added automatically)\\n- Use framework classes + custom inline styles or per-slide CSS for unique effects\\n- Use Google Fonts via theme.fonts array (loaded automatically)\\n- Prefer gradients, shadows, icons (Unicode emoji or SVG), visual hierarchy\\n- Do NOT use JavaScript\\n- Do NOT set width/height on the slide itself\\n- First slide should be a title/cover slide\\n- Use 5–10 slides for a typical presentation\\n- Only reference uploaded images from provided file paths\\n- Respond in the same language as the user\\'s prompt\\n- Make content professional, concise, and visually polished';\n}\n\nconst ATTACHMENT_RULES = '\\n\\nATTACHMENT HANDLING:\\n- Users may attach files (images and documents) from their library. Each entry has a stable ref like \"att_abc\".\\n- To embed an IMAGE in a slide, write <img src=\"{{attachment:<ref>}}\" alt=\"...\" class=\"img-cover\"> (or img-contain / img-rounded). The system replaces the placeholder with the real file URL during rendering.\\n- DO NOT replace the placeholder yourself. DO NOT use data: URLs. DO NOT fetch external image URLs.\\n- DOCUMENTS (kind=document) and OTHER files are CONTEXT ONLY. Use their description text to inform slide content; do NOT embed the file itself.\\n- Only emit {{attachment:<ref>}} markers for refs explicitly listed below. If no attachments are listed, do not invent placeholders.';\nsystemPrompt = systemPrompt + ATTACHMENT_RULES;\n\nconst slideCount = Number(promptMeta.slideCount) || 0;\nconst slidePrompts = Array.isArray(promptMeta.slidePrompts) ? promptMeta.slidePrompts : [];\nconst presentationSettings = promptMeta.presentationSettings || {};\n\nlet userMessage = prompt;\n\nif (slideCount > 0) {\n  userMessage += `\\n\\nDesired slide count: ${slideCount}`;\n}\n\nif (slidePrompts.length > 0) {\n  userMessage += '\\n\\nSlide-specific prompts:';\n  for (const sp of slidePrompts) {\n    userMessage += `\\n- Slide ${sp.slideIndex + 1}: ${sp.prompt}`;\n  }\n}\n\nif (Object.keys(presentationSettings).length > 0) {\n  userMessage += '\\n\\nPresentation theme settings (apply as CSS variable overrides in theme.css):\\n';\n  userMessage += JSON.stringify(presentationSettings, null, 2);\n}\n\nif (attachments.length > 0) {\n  userMessage += '\\n\\nAvailable attachments (insert images via {{attachment:<ref>}}; documents are context-only):';\n  for (const a of attachments) {\n    const dim = (a.width && a.height) ? ' ' + a.width + 'x' + a.height : '';\n    userMessage += '\\n- [' + a.ref + '] kind=' + a.kind + ', ' + (a.filename || '') + dim + ', mime=' + (a.mimeType || 'unknown');\n    if (a.description) {\n      userMessage += '\\n  Description: ' + a.description;\n    }\n  }\n}\n\nif (filePaths.length > 0) {\n  userMessage += '\\n\\nAvailable files:\\n' + filePaths.map(f => '- ' + f).join('\\n');\n}\n\nreturn [{ json: { systemPrompt, userMessage, jobId, secrets, promptMeta, filePaths, attachmentMap } }];"
+        "jsCode": "// ── Stage 1: Build PLANNING prompt ─────────────────────────────────\nconst body = $input.first().json.body;\nconst pm = body.promptMeta || {};\nconst attachments = Array.isArray(body.attachments) ? body.attachments : [];\nconst attachmentMap = body.attachmentMap || {};\nconst slideCount = Number(pm.slideCount) || 0;\nconst slidePrompts = Array.isArray(pm.slidePrompts) ? pm.slidePrompts : [];\nconst systemPrompt = pm.systemPrompt || 'You are a planner. Return JSON.';\n\nconst trim = (v, max) => {\n  if (typeof v !== 'string') return null;\n  const t = v.trim();\n  if (!t) return null;\n  return t.length > max ? t.slice(0, max) + '…' : t;\n};\n\nlet user = body.prompt || '';\n\nif (slideCount > 0) {\n  user += `\\n\\nDesired slide count: ${slideCount}`;\n}\n\nif (slidePrompts.length > 0) {\n  user += '\\n\\nPer-slide hints from the user:';\n  for (const sp of slidePrompts) {\n    user += `\\n- Slide ${sp.slideIndex + 1}: ${sp.prompt}`;\n  }\n}\n\n// Keep stage 1 context small: focus on structure/content only.\nif (attachments.length > 0) {\n  user += '\\n\\nAvailable attachments (refs + short summaries):';\n  for (const a of attachments) {\n    const dim = (a.width && a.height) ? ` ${a.width}x${a.height}` : '';\n    user += `\\n- [${a.ref}] kind=${a.kind}, ${a.filename || ''}${dim}, mime=${a.mimeType || 'unknown'}`;\n    const desc = trim(a.description, 220);\n    const sum = trim(a.summary, 420);\n    if (desc) user += `\\n  Description: ${desc}`;\n    if (sum) user += `\\n  Summary: ${sum}`;\n  }\n}\n\nreturn [{ json: {\n  systemPrompt,\n  userMessage: user,\n  jobId: body.jobId,\n  stage: 'planning',\n  attempt: body.attempt || 1,\n  secrets: body._secrets || {},\n  attachmentMap,\n  attachments,\n}}];\n"
       },
-      "id": "b2c3d4e5-6f7a-4b8c-9d0e-b2c3d4e5f6a7",
-      "name": "Build LLM Prompt",
+      "id": "build-planning-prompt",
+      "name": "Build Planning Prompt",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [750, 300]
+      "position": [
+        660,
+        80
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// ── Stage 2: Build DESIGN prompt ───────────────────────────────────\nconst body = $input.first().json.body;\nconst pm = body.promptMeta || {};\nconst attachments = Array.isArray(body.attachments) ? body.attachments : [];\nconst attachmentMap = body.attachmentMap || {};\nconst planningResult = pm.planningResult;\nconst designInput = pm.designInput || null;\nconst systemPrompt = pm.systemPrompt || 'You are an art director. Return JSON.';\n\nlet user = 'Generate a design brief (JSON) based on the planning result and the user design brief below.';\n\nuser += '\\n\\nPlanning result (slides + content):\\n' + JSON.stringify(planningResult, null, 2);\n\nif (designInput) {\n  user += '\\n\\nUser design brief:\\n' + JSON.stringify(designInput, null, 2);\n}\n\nif (attachments.length > 0) {\n  user += '\\n\\nAvailable attachments (consider visual treatment for image blocks):';\n  for (const a of attachments) {\n    const dim = (a.width && a.height) ? ` ${a.width}x${a.height}` : '';\n    user += `\\n- [${a.ref}] kind=${a.kind}${dim}`;\n    if (a.description) user += `\\n  Description: ${a.description}`;\n  }\n}\n\nreturn [{ json: {\n  systemPrompt,\n  userMessage: user,\n  jobId: body.jobId,\n  stage: 'design',\n  attempt: body.attempt || 1,\n  secrets: body._secrets || {},\n  attachmentMap,\n  attachments,\n}}];"
+      },
+      "id": "build-design-prompt",
+      "name": "Build Design Prompt",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        660,
+        280
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// ── Stage 3: Build LAYOUT prompt ───────────────────────────────────\nconst body = $input.first().json.body;\nconst pm = body.promptMeta || {};\nconst attachments = Array.isArray(body.attachments) ? body.attachments : [];\nconst attachmentMap = body.attachmentMap || {};\nconst planningResult = pm.planningResult;\nconst designBrief = pm.designBrief;\nconst systemPrompt = pm.systemPrompt || 'You are an HTML/CSS slide engineer. Return JSON.';\n\nconst ATTACHMENT_RULES = '\\n\\nATTACHMENT HANDLING:\\n- To embed an IMAGE write <img src=\"{{attachment:<ref>}}\" alt=\"...\" class=\"img-cover\"> using a ref from the list. The system replaces the placeholder during rendering.\\n- DO NOT replace the placeholder. DO NOT use data: URLs or external image URLs.\\n- DOCUMENTS (kind=document) are CONTEXT ONLY. Do NOT embed them.\\n- Only emit refs explicitly listed below. If no attachments are listed, do not invent placeholders.';\n\nlet user = 'Generate the final HTML/CSS slides JSON. Strictly follow the design brief: layout class, background, decor, element classes per slide. Length and order of slides[] must match planning_result.slides exactly.';\n\nuser += '\\n\\nPlanning result:\\n' + JSON.stringify(planningResult, null, 2);\nuser += '\\n\\nDesign brief:\\n' + JSON.stringify(designBrief, null, 2);\n\nif (attachments.length > 0) {\n  user += '\\n\\nAvailable attachments (refs you may embed):';\n  for (const a of attachments) {\n    user += `\\n- [${a.ref}] kind=${a.kind}, ${a.filename || ''}, mime=${a.mimeType || 'unknown'}`;\n    if (a.description) user += `\\n  Description: ${a.description}`;\n  }\n}\n\nreturn [{ json: {\n  systemPrompt: systemPrompt + ATTACHMENT_RULES,\n  userMessage: user,\n  jobId: body.jobId,\n  stage: 'layout',\n  attempt: body.attempt || 1,\n  secrets: body._secrets || {},\n  attachmentMap,\n  attachments,\n}}];"
+      },
+      "id": "build-layout-prompt",
+      "name": "Build Layout Prompt",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        660,
+        480
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// ── Stage Refine LAYOUT prompt ─────────────────────────────────────\nconst body = $input.first().json.body;\nconst pm = body.promptMeta || {};\nconst attachmentMap = body.attachmentMap || {};\nconst slideData = pm.slideData;\nconst refinePrompt = pm.refinePrompt || '';\nconst slideIndex = (typeof pm.slideIndex === 'number') ? pm.slideIndex : null;\nconst systemPrompt = pm.systemPrompt || 'You are a refinement assistant. Return JSON in the same shape.';\n\nlet user = 'Apply the user request below to the current slide_data. Return the complete slide_data JSON in the same shape (theme + slides array).';\n\nif (slideIndex !== null) {\n  user += `\\n\\nTarget: ONLY slide index ${slideIndex} (zero-based). Other slides MUST be returned unchanged byte-for-byte.`;\n} else {\n  user += '\\n\\nTarget: ALL slides — apply the change consistently.';\n}\n\nuser += '\\n\\nUser request:\\n' + refinePrompt;\nuser += '\\n\\nCurrent slide_data:\\n' + JSON.stringify(slideData, null, 2);\n\nreturn [{ json: {\n  systemPrompt,\n  userMessage: user,\n  jobId: body.jobId,\n  stage: 'refine_layout',\n  attempt: body.attempt || 1,\n  secrets: body._secrets || {},\n  attachmentMap,\n  attachments: body.attachments || [],\n}}];"
+      },
+      "id": "build-refine-prompt",
+      "name": "Build Refine Prompt",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        660,
+        700
+      ]
     },
     {
       "parameters": {
@@ -65,55 +198,179 @@
         },
         "sendBody": true,
         "specifyBody": "json",
-        "jsonBody": "={{ JSON.stringify({ model: $json.secrets.llmModel, messages: [{ role: 'system', content: $json.systemPrompt }, { role: 'user', content: $json.userMessage }], max_tokens: 16000, temperature: 0.3 }) }}",
+        "jsonBody": "={{ JSON.stringify({ model: $json.secrets.llmModel, messages: [{ role: 'system', content: $json.systemPrompt }, { role: 'user', content: $json.userMessage }], max_tokens: 2000, temperature: 0.1, response_format: { type: 'json_object' }, chat_template_kwargs: { enable_thinking: false }, extra_body: { chat_template_kwargs: { enable_thinking: false } } }) }}",
         "options": {
-          "timeout": 120000
+          "timeout": 600000
         }
       },
-      "id": "c3d4e5f6-7a8b-4c9d-0e1f-c3d4e5f6a7b8",
-      "name": "Call LLM API",
+      "id": "llm-planning",
+      "name": "LLM Planning",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
-      "position": [1000, 300]
+      "position": [
+        900,
+        80
+      ],
+      "onError": "continueRegularOutput",
+      "retryOnFail": true,
+      "maxTries": 4,
+      "waitBetweenTries": 5000
     },
     {
       "parameters": {
-        "method": "PATCH",
-        "url": "=http://api-service:3001/api/jobs/internal/{{ $('Build LLM Prompt').first().json.jobId }}",
+        "method": "POST",
+        "url": "={{ $json.secrets.llmBaseUrl }}/chat/completions",
         "sendHeaders": true,
         "headerParameters": {
           "parameters": [
             {
-              "name": "X-Internal-Key",
-              "value": "={{ $('Build LLM Prompt').first().json.secrets.internalApiKey }}"
+              "name": "Authorization",
+              "value": "=Bearer {{ $json.secrets.llmApiKey }}"
             }
           ]
         },
         "sendBody": true,
         "specifyBody": "json",
-        "jsonBody": "={{ JSON.stringify({ llmRequest: { systemPrompt: $('Build LLM Prompt').first().json.systemPrompt, userMessage: $('Build LLM Prompt').first().json.userMessage }, llmResponse: $json }) }}",
-        "options": {}
+        "jsonBody": "={{ JSON.stringify({ model: $json.secrets.llmModel, messages: [{ role: 'system', content: $json.systemPrompt }, { role: 'user', content: $json.userMessage }], max_tokens: 3500, temperature: 0.2, response_format: { type: 'json_object' }, chat_template_kwargs: { enable_thinking: false }, extra_body: { chat_template_kwargs: { enable_thinking: false } } }) }}",
+        "options": {
+          "timeout": 600000
+        }
       },
-      "id": "llm-logs-node-1",
-      "name": "Save LLM Logs",
+      "id": "llm-design",
+      "name": "LLM Design",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
-      "position": [1250, 200]
+      "position": [
+        900,
+        280
+      ],
+      "onError": "continueRegularOutput",
+      "retryOnFail": true,
+      "maxTries": 4,
+      "waitBetweenTries": 5000
     },
     {
       "parameters": {
-        "jsCode": "const input = $input.first().json;\nconst jobId = $('Build LLM Prompt').first().json.jobId;\nconst secrets = $('Build LLM Prompt').first().json.secrets;\n\nlet content = '';\ntry {\n  content = input.choices[0].message.content;\n} catch(e) {\n  content = JSON.stringify(input);\n}\n\nif (content.includes('```')) {\n  content = content.replace(/```json\\s*/g, '').replace(/```\\s*/g, '').trim();\n}\n\nlet slideData;\ntry {\n  slideData = JSON.parse(content);\n  if (!slideData.slides || !Array.isArray(slideData.slides)) {\n    throw new Error('Missing slides array');\n  }\n  for (let i = 0; i < slideData.slides.length; i++) {\n    if (!slideData.slides[i].html || typeof slideData.slides[i].html !== 'string') {\n      throw new Error(`Slide ${i} missing html field`);\n    }\n  }\n} catch (e) {\n  slideData = {\n    theme: { css: ':root { --primary: #dc2626; }' },\n    slides: [{\n      html: '<div class=\"centered\"><h1 class=\"heading-xl\">Error</h1><p class=\"subtitle\">' + (e.message || 'Failed to parse LLM response').replace(/</g, '&lt;') + '</p></div>',\n      css: '',\n      notes: ''\n    }]\n  };\n}\n\n// Avoid external font loading in converter to prevent page-render timeouts\nif (!slideData.theme || typeof slideData.theme !== 'object') {\n  slideData.theme = {};\n}\nslideData.theme.fonts = [];\n\nreturn [{ json: { slideData, jobId, secrets } }];"
+        "method": "POST",
+        "url": "={{ $json.secrets.llmBaseUrl }}/chat/completions",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $json.secrets.llmApiKey }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ model: $json.secrets.llmModel, messages: [{ role: 'system', content: $json.systemPrompt }, { role: 'user', content: $json.userMessage }], max_tokens: 6000, temperature: 0.2, response_format: { type: 'json_object' }, chat_template_kwargs: { enable_thinking: false }, extra_body: { chat_template_kwargs: { enable_thinking: false } } }) }}",
+        "options": {
+          "timeout": 600000
+        }
       },
-      "id": "d4e5f6a7-8b9c-4d0e-1f2a-d4e5f6a7b8c9",
-      "name": "Parse LLM Response",
+      "id": "llm-layout",
+      "name": "LLM Layout",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        900,
+        480
+      ],
+      "onError": "continueRegularOutput",
+      "retryOnFail": true,
+      "maxTries": 4,
+      "waitBetweenTries": 5000
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $json.secrets.llmBaseUrl }}/chat/completions",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $json.secrets.llmApiKey }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ model: $json.secrets.llmModel, messages: [{ role: 'system', content: $json.systemPrompt }, { role: 'user', content: $json.userMessage }], max_tokens: 3000, temperature: 0.2, response_format: { type: 'json_object' }, chat_template_kwargs: { enable_thinking: false }, extra_body: { chat_template_kwargs: { enable_thinking: false } } }) }}",
+        "options": {
+          "timeout": 600000
+        }
+      },
+      "id": "llm-refine",
+      "name": "LLM Refine",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        900,
+        700
+      ],
+      "onError": "continueRegularOutput",
+      "retryOnFail": true,
+      "maxTries": 4,
+      "waitBetweenTries": 5000
+    },
+    {
+      "parameters": {
+        "jsCode": "const raw = $input.first().json;\nconst prev = $('Build Planning Prompt').first().json;\n\nfunction probeError(raw) {\n  if (!raw) return null;\n  if (raw.error && typeof raw.error === 'object') {\n    return raw.error.message || raw.error.code || JSON.stringify(raw.error).slice(0, 500);\n  }\n  if (raw.message && raw.name && /Error/i.test(String(raw.name))) {\n    return String(raw.message);\n  }\n  return null;\n}\n\n\nfunction extractJsonText(text) {\n  if (typeof text !== 'string') return null;\n  let t = text.trim();\n  if (!t) return null;\n\n  // Strip common code fences\n  if (t.includes('```')) {\n    t = t.replace(/```json\\s*/gi, '').replace(/```\\s*/g, '').trim();\n  }\n\n  // Fast path\n  if (t.startsWith('{') || t.startsWith('[')) return t;\n\n  // Heuristic: pick the largest JSON-looking substring\n  const firstObj = t.indexOf('{');\n  const lastObj = t.lastIndexOf('}');\n  if (firstObj !== -1 && lastObj !== -1 && lastObj > firstObj) {\n    return t.slice(firstObj, lastObj + 1);\n  }\n\n  const firstArr = t.indexOf('[');\n  const lastArr = t.lastIndexOf(']');\n  if (firstArr !== -1 && lastArr !== -1 && lastArr > firstArr) {\n    return t.slice(firstArr, lastArr + 1);\n  }\n\n  return null;\n}\n\n\n\n\nfunction extractBalancedJson(text) {\n  if (typeof text !== 'string') return null;\n  let t = text.trim();\n  if (!t) return null;\n\n  if (t.includes('```')) {\n    t = t.replace(/```json\\s*/gi, '').replace(/```\\s*/g, '').trim();\n  }\n\n  // Take the first opening bracket as the JSON root. Earlier versions tried\n  // to be smart and locate the brace nearest to '\"slides\"', but that broke on\n  // design output where the root object starts with '\"theme\"' first — the\n  // heuristic then anchored on an inner brace (theme.fonts) and lost theme.\n  let start;\n  const obj = t.indexOf('{');\n  const arr = t.indexOf('[');\n  if (obj === -1 && arr === -1) return null;\n  if (obj === -1) start = arr;\n  else if (arr === -1) start = obj;\n  else start = Math.min(obj, arr);\n\n  const s = t.slice(start);\n  const open = s[0];\n  const close = open === '{' ? '}' : ']';\n\n  let depth = 0;\n  let inStr = false;\n  let esc = false;\n\n  for (let i = 0; i < s.length; i++) {\n    const ch = s[i];\n    if (inStr) {\n      if (esc) {\n        esc = false;\n      } else if (ch === '\\\\') {\n        esc = true;\n      } else if (ch === '\"') {\n        inStr = false;\n      }\n      continue;\n    }\n\n    if (ch === '\"') {\n      inStr = true;\n      continue;\n    }\n\n    if (ch === open) depth++;\n    if (ch === close) {\n      depth--;\n      if (depth === 0) {\n        return s.slice(0, i + 1);\n      }\n    }\n  }\n\n  return null;\n}\n\n\nconst upstreamError = probeError(raw);\n\nlet content = '';\nlet output = null;\nlet errorMessage = null;\n\nif (upstreamError) {\n  errorMessage = 'LLM call failed: ' + upstreamError;\n} else {\n  const choice = raw?.choices?.[0] || {};\n  const msg = choice.message || {};\n  const finishReason = choice.finish_reason || '';\n  const realContent = typeof msg.content === 'string' ? msg.content : '';\n  const reasoningContent = typeof msg.reasoning_content === 'string' ? msg.reasoning_content : (typeof msg.reasoning === 'string' ? msg.reasoning : '');\n  content = realContent || reasoningContent || '';\n  if (finishReason === 'length') {\n    errorMessage = 'LLM hit token limit (max_tokens) before returning JSON. Включите enable_thinking=false или увеличьте max_tokens.';\n  } else if (!realContent && reasoningContent) {\n    errorMessage = 'LLM returned only reasoning_content (thinking mode is on). Set chat_template_kwargs.enable_thinking=false or use a non-reasoning model.';\n  } else if (!content || content.trim().length === 0) {\n    errorMessage = 'LLM returned empty content';\n  } else {    const jsonText = extractBalancedJson(content);\n    try {\n      if (!jsonText) {\n        if (finishReason && finishReason !== 'stop') {\n          throw new Error('LLM output truncated (finish_reason=' + finishReason + '). Попробуйте перезапустить этап или увеличить max_tokens.');\n        }\n        throw new Error('No JSON found in LLM output');\n      }\n      output = JSON.parse(jsonText);\n      if (output === null || typeof output !== 'object') {\n        throw new Error('LLM output is not a JSON object');\n      }\n      if (!output.slides || !Array.isArray(output.slides)) {\n        throw new Error('Missing slides[] in planning output');\n      }\n    } catch (e) {\n      errorMessage = e.message || 'Failed to parse LLM JSON';\n      // Fallback: reasoning-only models may not emit valid JSON.\n      try {\n        output = fallbackPlanningFromReasoning(content, prev?.secrets ? (prev?.secrets?.slideCount || null) : null);\n        errorMessage = null;\n      } catch (e2) {\n        output = null;\n      }\n    }\n  }\n}\n\n\n\nfunction fallbackPlanningFromReasoning(reasoningText, desiredCount) {\n  const text = typeof reasoningText === 'string' ? reasoningText : '';\n  const slides = [];\n\n  // Split by \"*Slide N:*\" blocks\n  const re = /\\*Slide\\s*(\\d+)\\*:\\s*([\\s\\S]*?)(?=\\*Slide\\s*\\d+\\*:\\s*|$)/g;\n  let m;\n  while ((m = re.exec(text)) !== null) {\n    const idx = Number(m[1]);\n    const block = m[2] || '';\n\n    const title = (block.match(/Title:\\s*\\\"([^\\\"]+)\\\"/) || [])[1] || `Слайд ${idx + 1}`;\n    const subtitle = (block.match(/Subtitle:\\s*\\\"([^\\\"]*)\\\"/) || [])[1] || '';\n\n    const bullets = [];\n    const bulletsMatch = block.match(/bullets?[^\\[]*\\[([\\s\\S]*?)\\]/i);\n    if (bulletsMatch) {\n      const inner = bulletsMatch[1];\n      for (const item of inner.split(/\\n|,/)) {\n        const cleaned = item.replace(/[\\\"\\[\\]]/g, '').trim();\n        if (cleaned && cleaned.length < 200) bullets.push(cleaned);\n      }\n    }\n\n    const speaker = (block.match(/speaker_notes?:\\s*\\\"([\\s\\S]*?)\\\"/) || [])[1] || '';\n\n    const blocks = [{ type: 'heading', text: title }];\n    if (subtitle) blocks.push({ type: 'subtitle', text: subtitle });\n    if (bullets.length >= 2) blocks.push({ type: 'bullets', items: bullets.slice(0, 6) });\n    else blocks.push({ type: 'text', text: `Ключевые идеи про: ${title}.` });\n\n    slides.push({ index: idx, title, subtitle, blocks, speaker_notes: speaker || '' });\n  }\n\n  // If nothing extracted, build a minimal skeleton\n  const count = Number.isFinite(Number(desiredCount)) && Number(desiredCount) > 0 ? Number(desiredCount) : 5;\n  if (slides.length === 0) {\n    for (let i = 0; i < count; i++) {\n      slides.push({\n        index: i,\n        title: i === 0 ? 'Титульный слайд' : `Слайд ${i + 1}`,\n        subtitle: i === 0 ? 'Короткий подзаголовок' : '',\n        blocks: [\n          { type: 'heading', text: i === 0 ? 'Тема презентации' : `Раздел ${i}` },\n          ...(i === 0 ? [{ type: 'subtitle', text: 'Короткий подзаголовок' }] : [{ type: 'text', text: 'Основная мысль слайда.' }]),\n        ],\n        speaker_notes: '',\n      });\n    }\n  }\n\n  // Normalize ordering and ensure indices 0..count-1\n  slides.sort((a, b) => a.index - b.index);\n  const out = [];\n  for (let i = 0; i < (Number(desiredCount) || slides.length); i++) {\n    const s = slides[i] || slides[slides.length - 1];\n    out.push({ ...s, index: i });\n  }\n  return { slides: out };\n}\nreturn [{ json: {\n  jobId: prev.jobId,\n  stage: prev.stage,\n  output,\n  errorMessage,\n  llmRequest: { systemPrompt: prev.systemPrompt, userMessage: prev.userMessage },\n  llmResponse: raw,\n  secrets: prev.secrets,\n  attachmentMap: prev.attachmentMap || {},\n}}];"
+      },
+      "id": "parse-planning",
+      "name": "Parse Planning",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [1250, 300]
+      "position": [
+        1140,
+        80
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const raw = $input.first().json;\nconst prev = $('Build Design Prompt').first().json;\n\nfunction probeError(raw) {\n  if (!raw) return null;\n  if (raw.error && typeof raw.error === 'object') {\n    return raw.error.message || raw.error.code || JSON.stringify(raw.error).slice(0, 500);\n  }\n  if (raw.message && raw.name && /Error/i.test(String(raw.name))) {\n    return String(raw.message);\n  }\n  return null;\n}\n\n\nfunction extractJsonText(text) {\n  if (typeof text !== 'string') return null;\n  let t = text.trim();\n  if (!t) return null;\n\n  // Strip common code fences\n  if (t.includes('```')) {\n    t = t.replace(/```json\\s*/gi, '').replace(/```\\s*/g, '').trim();\n  }\n\n  // Fast path\n  if (t.startsWith('{') || t.startsWith('[')) return t;\n\n  // Heuristic: pick the largest JSON-looking substring\n  const firstObj = t.indexOf('{');\n  const lastObj = t.lastIndexOf('}');\n  if (firstObj !== -1 && lastObj !== -1 && lastObj > firstObj) {\n    return t.slice(firstObj, lastObj + 1);\n  }\n\n  const firstArr = t.indexOf('[');\n  const lastArr = t.lastIndexOf(']');\n  if (firstArr !== -1 && lastArr !== -1 && lastArr > firstArr) {\n    return t.slice(firstArr, lastArr + 1);\n  }\n\n  return null;\n}\n\n\n\n\nfunction extractBalancedJson(text) {\n  if (typeof text !== 'string') return null;\n  let t = text.trim();\n  if (!t) return null;\n\n  if (t.includes('```')) {\n    t = t.replace(/```json\\s*/gi, '').replace(/```\\s*/g, '').trim();\n  }\n\n  // Take the first opening bracket as the JSON root. Earlier versions tried\n  // to be smart and locate the brace nearest to '\"slides\"', but that broke on\n  // design output where the root object starts with '\"theme\"' first — the\n  // heuristic then anchored on an inner brace (theme.fonts) and lost theme.\n  let start;\n  const obj = t.indexOf('{');\n  const arr = t.indexOf('[');\n  if (obj === -1 && arr === -1) return null;\n  if (obj === -1) start = arr;\n  else if (arr === -1) start = obj;\n  else start = Math.min(obj, arr);\n\n  const s = t.slice(start);\n  const open = s[0];\n  const close = open === '{' ? '}' : ']';\n\n  let depth = 0;\n  let inStr = false;\n  let esc = false;\n\n  for (let i = 0; i < s.length; i++) {\n    const ch = s[i];\n    if (inStr) {\n      if (esc) {\n        esc = false;\n      } else if (ch === '\\\\') {\n        esc = true;\n      } else if (ch === '\"') {\n        inStr = false;\n      }\n      continue;\n    }\n\n    if (ch === '\"') {\n      inStr = true;\n      continue;\n    }\n\n    if (ch === open) depth++;\n    if (ch === close) {\n      depth--;\n      if (depth === 0) {\n        return s.slice(0, i + 1);\n      }\n    }\n  }\n\n  return null;\n}\n\n\nconst upstreamError = probeError(raw);\n\nlet content = '';\nlet output = null;\nlet errorMessage = null;\n\nif (upstreamError) {\n  errorMessage = 'LLM call failed: ' + upstreamError;\n} else {\n  const choice = raw?.choices?.[0] || {};\n  const msg = choice.message || {};\n  const finishReason = choice.finish_reason || '';\n  const realContent = typeof msg.content === 'string' ? msg.content : '';\n  const reasoningContent = typeof msg.reasoning_content === 'string' ? msg.reasoning_content : (typeof msg.reasoning === 'string' ? msg.reasoning : '');\n  content = realContent || reasoningContent || '';\n  if (finishReason === 'length') {\n    errorMessage = 'LLM hit token limit (max_tokens) before returning JSON. Включите enable_thinking=false или увеличьте max_tokens.';\n  } else if (!realContent && reasoningContent) {\n    errorMessage = 'LLM returned only reasoning_content (thinking mode is on). Set chat_template_kwargs.enable_thinking=false or use a non-reasoning model.';\n  } else if (!content || content.trim().length === 0) {\n    errorMessage = 'LLM returned empty content';\n  } else {    const jsonText = extractBalancedJson(content);\n    try {\n      if (!jsonText) {\n        if (finishReason && finishReason !== 'stop') {\n          throw new Error('LLM output truncated (finish_reason=' + finishReason + '). Попробуйте перезапустить этап или увеличить max_tokens.');\n        }\n        throw new Error('No JSON found in LLM output');\n      }\n      output = JSON.parse(jsonText);\n      if (output === null || typeof output !== 'object') {\n        throw new Error('LLM output is not a JSON object');\n      }\n      if (!output.theme || !Array.isArray(output.slides)) {\n        throw new Error('Design output must contain theme + slides[]');\n      }\n    } catch (e) {\n      errorMessage = e.message || 'Failed to parse LLM JSON';\n      output = null;\n    }\n  }\n}\n\nreturn [{ json: {\n  jobId: prev.jobId,\n  stage: prev.stage,\n  output,\n  errorMessage,\n  llmRequest: { systemPrompt: prev.systemPrompt, userMessage: prev.userMessage },\n  llmResponse: raw,\n  secrets: prev.secrets,\n  attachmentMap: prev.attachmentMap || {},\n}}];"
+      },
+      "id": "parse-design",
+      "name": "Parse Design",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1140,
+        280
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const raw = $input.first().json;\nconst prev = $('Build Layout Prompt').first().json;\n\nfunction probeError(raw) {\n  if (!raw) return null;\n  if (raw.error && typeof raw.error === 'object') {\n    return raw.error.message || raw.error.code || JSON.stringify(raw.error).slice(0, 500);\n  }\n  if (raw.message && raw.name && /Error/i.test(String(raw.name))) {\n    return String(raw.message);\n  }\n  return null;\n}\n\n\nfunction extractJsonText(text) {\n  if (typeof text !== 'string') return null;\n  let t = text.trim();\n  if (!t) return null;\n\n  // Strip common code fences\n  if (t.includes('```')) {\n    t = t.replace(/```json\\s*/gi, '').replace(/```\\s*/g, '').trim();\n  }\n\n  // Fast path\n  if (t.startsWith('{') || t.startsWith('[')) return t;\n\n  // Heuristic: pick the largest JSON-looking substring\n  const firstObj = t.indexOf('{');\n  const lastObj = t.lastIndexOf('}');\n  if (firstObj !== -1 && lastObj !== -1 && lastObj > firstObj) {\n    return t.slice(firstObj, lastObj + 1);\n  }\n\n  const firstArr = t.indexOf('[');\n  const lastArr = t.lastIndexOf(']');\n  if (firstArr !== -1 && lastArr !== -1 && lastArr > firstArr) {\n    return t.slice(firstArr, lastArr + 1);\n  }\n\n  return null;\n}\n\n\n\n\nfunction extractBalancedJson(text) {\n  if (typeof text !== 'string') return null;\n  let t = text.trim();\n  if (!t) return null;\n\n  if (t.includes('```')) {\n    t = t.replace(/```json\\s*/gi, '').replace(/```\\s*/g, '').trim();\n  }\n\n  // Take the first opening bracket as the JSON root. Earlier versions tried\n  // to be smart and locate the brace nearest to '\"slides\"', but that broke on\n  // design output where the root object starts with '\"theme\"' first — the\n  // heuristic then anchored on an inner brace (theme.fonts) and lost theme.\n  let start;\n  const obj = t.indexOf('{');\n  const arr = t.indexOf('[');\n  if (obj === -1 && arr === -1) return null;\n  if (obj === -1) start = arr;\n  else if (arr === -1) start = obj;\n  else start = Math.min(obj, arr);\n\n  const s = t.slice(start);\n  const open = s[0];\n  const close = open === '{' ? '}' : ']';\n\n  let depth = 0;\n  let inStr = false;\n  let esc = false;\n\n  for (let i = 0; i < s.length; i++) {\n    const ch = s[i];\n    if (inStr) {\n      if (esc) {\n        esc = false;\n      } else if (ch === '\\\\') {\n        esc = true;\n      } else if (ch === '\"') {\n        inStr = false;\n      }\n      continue;\n    }\n\n    if (ch === '\"') {\n      inStr = true;\n      continue;\n    }\n\n    if (ch === open) depth++;\n    if (ch === close) {\n      depth--;\n      if (depth === 0) {\n        return s.slice(0, i + 1);\n      }\n    }\n  }\n\n  return null;\n}\n\n\nconst upstreamError = probeError(raw);\n\nlet content = '';\nlet output = null;\nlet errorMessage = null;\n\nif (upstreamError) {\n  errorMessage = 'LLM call failed: ' + upstreamError;\n} else {\n  const choice = raw?.choices?.[0] || {};\n  const msg = choice.message || {};\n  const finishReason = choice.finish_reason || '';\n  const realContent = typeof msg.content === 'string' ? msg.content : '';\n  const reasoningContent = typeof msg.reasoning_content === 'string' ? msg.reasoning_content : (typeof msg.reasoning === 'string' ? msg.reasoning : '');\n  content = realContent || reasoningContent || '';\n  if (finishReason === 'length') {\n    errorMessage = 'LLM hit token limit (max_tokens) before returning JSON. Включите enable_thinking=false или увеличьте max_tokens.';\n  } else if (!realContent && reasoningContent) {\n    errorMessage = 'LLM returned only reasoning_content (thinking mode is on). Set chat_template_kwargs.enable_thinking=false or use a non-reasoning model.';\n  } else if (!content || content.trim().length === 0) {\n    errorMessage = 'LLM returned empty content';\n  } else {    const jsonText = extractBalancedJson(content);\n    try {\n      if (!jsonText) {\n        if (finishReason && finishReason !== 'stop') {\n          throw new Error('LLM output truncated (finish_reason=' + finishReason + '). Попробуйте перезапустить этап или увеличить max_tokens.');\n        }\n        throw new Error('No JSON found in LLM output');\n      }\n      output = JSON.parse(jsonText);\n      if (output === null || typeof output !== 'object') {\n        throw new Error('LLM output is not a JSON object');\n      }\n      if (!output.slides || !Array.isArray(output.slides)) {\n        throw new Error('Missing slides[] in layout output');\n      }\n      for (let i = 0; i < output.slides.length; i++) {\n        if (typeof output.slides[i].html !== 'string') {\n          throw new Error('Slide ' + i + ' missing html');\n        }\n      }\n      if (!output.theme || typeof output.theme !== 'object') output.theme = {};\n      output.theme.fonts = [];\n    } catch (e) {\n      errorMessage = e.message || 'Failed to parse LLM JSON';\n      output = null;\n    }\n  }\n}\n\nreturn [{ json: {\n  jobId: prev.jobId,\n  stage: prev.stage,\n  output,\n  errorMessage,\n  llmRequest: { systemPrompt: prev.systemPrompt, userMessage: prev.userMessage },\n  llmResponse: raw,\n  secrets: prev.secrets,\n  attachmentMap: prev.attachmentMap || {},\n}}];"
+      },
+      "id": "parse-layout",
+      "name": "Parse Layout",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1140,
+        480
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const raw = $input.first().json;\nconst prev = $('Build Refine Prompt').first().json;\n\nfunction probeError(raw) {\n  if (!raw) return null;\n  if (raw.error && typeof raw.error === 'object') {\n    return raw.error.message || raw.error.code || JSON.stringify(raw.error).slice(0, 500);\n  }\n  if (raw.message && raw.name && /Error/i.test(String(raw.name))) {\n    return String(raw.message);\n  }\n  return null;\n}\n\n\nfunction extractJsonText(text) {\n  if (typeof text !== 'string') return null;\n  let t = text.trim();\n  if (!t) return null;\n\n  // Strip common code fences\n  if (t.includes('```')) {\n    t = t.replace(/```json\\s*/gi, '').replace(/```\\s*/g, '').trim();\n  }\n\n  // Fast path\n  if (t.startsWith('{') || t.startsWith('[')) return t;\n\n  // Heuristic: pick the largest JSON-looking substring\n  const firstObj = t.indexOf('{');\n  const lastObj = t.lastIndexOf('}');\n  if (firstObj !== -1 && lastObj !== -1 && lastObj > firstObj) {\n    return t.slice(firstObj, lastObj + 1);\n  }\n\n  const firstArr = t.indexOf('[');\n  const lastArr = t.lastIndexOf(']');\n  if (firstArr !== -1 && lastArr !== -1 && lastArr > firstArr) {\n    return t.slice(firstArr, lastArr + 1);\n  }\n\n  return null;\n}\n\n\n\n\nfunction extractBalancedJson(text) {\n  if (typeof text !== 'string') return null;\n  let t = text.trim();\n  if (!t) return null;\n\n  if (t.includes('```')) {\n    t = t.replace(/```json\\s*/gi, '').replace(/```\\s*/g, '').trim();\n  }\n\n  // Take the first opening bracket as the JSON root. Earlier versions tried\n  // to be smart and locate the brace nearest to '\"slides\"', but that broke on\n  // design output where the root object starts with '\"theme\"' first — the\n  // heuristic then anchored on an inner brace (theme.fonts) and lost theme.\n  let start;\n  const obj = t.indexOf('{');\n  const arr = t.indexOf('[');\n  if (obj === -1 && arr === -1) return null;\n  if (obj === -1) start = arr;\n  else if (arr === -1) start = obj;\n  else start = Math.min(obj, arr);\n\n  const s = t.slice(start);\n  const open = s[0];\n  const close = open === '{' ? '}' : ']';\n\n  let depth = 0;\n  let inStr = false;\n  let esc = false;\n\n  for (let i = 0; i < s.length; i++) {\n    const ch = s[i];\n    if (inStr) {\n      if (esc) {\n        esc = false;\n      } else if (ch === '\\\\') {\n        esc = true;\n      } else if (ch === '\"') {\n        inStr = false;\n      }\n      continue;\n    }\n\n    if (ch === '\"') {\n      inStr = true;\n      continue;\n    }\n\n    if (ch === open) depth++;\n    if (ch === close) {\n      depth--;\n      if (depth === 0) {\n        return s.slice(0, i + 1);\n      }\n    }\n  }\n\n  return null;\n}\n\n\nconst upstreamError = probeError(raw);\n\nlet content = '';\nlet output = null;\nlet errorMessage = null;\n\nif (upstreamError) {\n  errorMessage = 'LLM call failed: ' + upstreamError;\n} else {\n  const choice = raw?.choices?.[0] || {};\n  const msg = choice.message || {};\n  const finishReason = choice.finish_reason || '';\n  const realContent = typeof msg.content === 'string' ? msg.content : '';\n  const reasoningContent = typeof msg.reasoning_content === 'string' ? msg.reasoning_content : (typeof msg.reasoning === 'string' ? msg.reasoning : '');\n  content = realContent || reasoningContent || '';\n  if (finishReason === 'length') {\n    errorMessage = 'LLM hit token limit (max_tokens) before returning JSON. Включите enable_thinking=false или увеличьте max_tokens.';\n  } else if (!realContent && reasoningContent) {\n    errorMessage = 'LLM returned only reasoning_content (thinking mode is on). Set chat_template_kwargs.enable_thinking=false or use a non-reasoning model.';\n  } else if (!content || content.trim().length === 0) {\n    errorMessage = 'LLM returned empty content';\n  } else {    const jsonText = extractBalancedJson(content);\n    try {\n      if (!jsonText) {\n        if (finishReason && finishReason !== 'stop') {\n          throw new Error('LLM output truncated (finish_reason=' + finishReason + '). Попробуйте перезапустить этап или увеличить max_tokens.');\n        }\n        throw new Error('No JSON found in LLM output');\n      }\n      output = JSON.parse(jsonText);\n      if (output === null || typeof output !== 'object') {\n        throw new Error('LLM output is not a JSON object');\n      }\n      if (!output.slides || !Array.isArray(output.slides)) {\n        throw new Error('Missing slides[] in refine output');\n      }\n      if (!output.theme || typeof output.theme !== 'object') output.theme = {};\n      output.theme.fonts = [];\n    } catch (e) {\n      errorMessage = e.message || 'Failed to parse LLM JSON';\n      output = null;\n    }\n  }\n}\n\nreturn [{ json: {\n  jobId: prev.jobId,\n  stage: prev.stage,\n  output,\n  errorMessage,\n  llmRequest: { systemPrompt: prev.systemPrompt, userMessage: prev.userMessage },\n  llmResponse: raw,\n  secrets: prev.secrets,\n  attachmentMap: prev.attachmentMap || {},\n}}];"
+      },
+      "id": "parse-refine",
+      "name": "Parse Refine",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1140,
+        700
+      ]
     },
     {
       "parameters": {
         "method": "PATCH",
-        "url": "=http://api-service:3001/api/jobs/internal/{{ $json.jobId }}",
+        "url": "=http://api-service:3001/api/jobs/internal/{{ $json.jobId }}/steps/{{ $json.stage }}",
         "sendHeaders": true,
         "headerParameters": {
           "parameters": [
@@ -125,14 +382,98 @@
         },
         "sendBody": true,
         "specifyBody": "json",
-        "jsonBody": "={{ JSON.stringify({ status: 'processing', slideData: $json.slideData }) }}",
+        "jsonBody": "={{ JSON.stringify({ output: $json.output, llmRequest: $json.llmRequest, llmResponse: $json.llmResponse, errorMessage: $json.errorMessage }) }}",
         "options": {}
       },
-      "id": "e5f6a7b8-9c0d-4e1f-2a3b-e5f6a7b8c9d0",
-      "name": "Save Slide Data",
+      "id": "save-planning",
+      "name": "Save Planning Step",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
-      "position": [1500, 300]
+      "position": [
+        1380,
+        80
+      ]
+    },
+    {
+      "parameters": {
+        "method": "PATCH",
+        "url": "=http://api-service:3001/api/jobs/internal/{{ $json.jobId }}/steps/{{ $json.stage }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-Internal-Key",
+              "value": "={{ $json.secrets.internalApiKey }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ output: $json.output, llmRequest: $json.llmRequest, llmResponse: $json.llmResponse, errorMessage: $json.errorMessage }) }}",
+        "options": {}
+      },
+      "id": "save-design",
+      "name": "Save Design Step",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1380,
+        280
+      ]
+    },
+    {
+      "parameters": {
+        "method": "PATCH",
+        "url": "=http://api-service:3001/api/jobs/internal/{{ $json.jobId }}/steps/{{ $json.stage }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-Internal-Key",
+              "value": "={{ $json.secrets.internalApiKey }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ output: $json.output, llmRequest: $json.llmRequest, llmResponse: $json.llmResponse, errorMessage: $json.errorMessage }) }}",
+        "options": {}
+      },
+      "id": "save-layout",
+      "name": "Save Layout Step",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1380,
+        480
+      ]
+    },
+    {
+      "parameters": {
+        "method": "PATCH",
+        "url": "=http://api-service:3001/api/jobs/internal/{{ $json.jobId }}/steps/{{ $json.stage }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-Internal-Key",
+              "value": "={{ $json.secrets.internalApiKey }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ output: $json.output, llmRequest: $json.llmRequest, llmResponse: $json.llmResponse, errorMessage: $json.errorMessage }) }}",
+        "options": {}
+      },
+      "id": "save-refine",
+      "name": "Save Refine Step",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1380,
+        700
+      ]
     },
     {
       "parameters": {
@@ -140,27 +481,50 @@
         "url": "http://converter-service:3002/convert",
         "sendBody": true,
         "specifyBody": "json",
-        "jsonBody": "={{ JSON.stringify({ slideData: $('Parse LLM Response').first().json.slideData, outputDir: '/data/results/' + $('Parse LLM Response').first().json.jobId, attachmentMap: $('Build LLM Prompt').first().json.attachmentMap || {} }) }}",
+        "jsonBody": "={{ JSON.stringify({ slideData: $('Parse Layout').first().json.output, outputDir: '/data/results/' + $('Parse Layout').first().json.jobId, attachmentMap: $('Parse Layout').first().json.attachmentMap || {} }) }}",
         "options": {
-          "timeout": 60000
+          "timeout": 120000
         }
       },
-      "id": "f6a7b8c9-0d1e-4f2a-3b4c-f6a7b8c9d0e1",
-      "name": "Call Converter",
+      "id": "convert-layout",
+      "name": "Convert (layout)",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
-      "position": [1750, 300]
+      "position": [
+        1740,
+        480
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://converter-service:3002/convert",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ slideData: $('Parse Refine').first().json.output, outputDir: '/data/results/' + $('Parse Refine').first().json.jobId, attachmentMap: $('Parse Refine').first().json.attachmentMap || {} }) }}",
+        "options": {
+          "timeout": 120000
+        }
+      },
+      "id": "convert-refine",
+      "name": "Convert (refine)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1740,
+        700
+      ]
     },
     {
       "parameters": {
         "method": "PATCH",
-        "url": "=http://api-service:3001/api/jobs/internal/{{ $('Parse LLM Response').first().json.jobId }}",
+        "url": "=http://api-service:3001/api/jobs/internal/{{ $('Parse Layout').first().json.jobId }}",
         "sendHeaders": true,
         "headerParameters": {
           "parameters": [
             {
               "name": "X-Internal-Key",
-              "value": "={{ $('Parse LLM Response').first().json.secrets.internalApiKey }}"
+              "value": "={{ $('Parse Layout').first().json.secrets.internalApiKey }}"
             }
           ]
         },
@@ -169,29 +533,65 @@
         "jsonBody": "={{ JSON.stringify({ status: 'done', resultPaths: $json.paths, resultPath: $json.paths.pdf }) }}",
         "options": {}
       },
-      "id": "a7b8c9d0-1e2f-4a3b-4c5d-a7b8c9d0e1f2",
-      "name": "Update Status Done",
+      "id": "done-layout",
+      "name": "Mark Done (layout)",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
-      "position": [2000, 300]
-    },
-    {
-      "parameters": {},
-      "id": "b8c9d0e1-2f3a-4b4c-5d6e-b8c9d0e1f2a3",
-      "name": "Error Trigger",
-      "type": "n8n-nodes-base.errorTrigger",
-      "typeVersion": 1,
-      "position": [250, 600]
+      "position": [
+        1980,
+        480
+      ]
     },
     {
       "parameters": {
-        "jsCode": "const errorData = $input.first().json;\nlet errorMessage = 'Unknown error occurred in pipeline';\nlet jobId = null;\nlet internalApiKey = null;\n\ntry {\n  if (errorData?.execution?.error?.message) {\n    errorMessage = errorData.execution.error.message;\n  }\n} catch (e) {}\n\nfunction tryExtractFrom(value) {\n  if (!value || typeof value !== 'object') return;\n\n  if (!jobId && typeof value.jobId === 'string' && value.jobId.length > 0) {\n    jobId = value.jobId;\n  }\n\n  if (!internalApiKey && value._secrets && typeof value._secrets.internalApiKey === 'string') {\n    internalApiKey = value._secrets.internalApiKey;\n  }\n\n  if (!internalApiKey && value.secrets && typeof value.secrets.internalApiKey === 'string') {\n    internalApiKey = value.secrets.internalApiKey;\n  }\n\n  if (!jobId && typeof value.url === 'string') {\n    const m = value.url.match(/\\/api\\/jobs\\/internal\\/([0-9a-fA-F-]{36})/);\n    if (m) jobId = m[1];\n  }\n}\n\nfunction deepWalk(value, seen = new Set()) {\n  if (!value || typeof value !== 'object') return;\n  if (seen.has(value)) return;\n  seen.add(value);\n\n  tryExtractFrom(value);\n  if (jobId && internalApiKey) return;\n\n  if (Array.isArray(value)) {\n    for (const item of value) {\n      deepWalk(item, seen);\n      if (jobId && internalApiKey) return;\n    }\n    return;\n  }\n\n  for (const key of Object.keys(value)) {\n    deepWalk(value[key], seen);\n    if (jobId && internalApiKey) return;\n  }\n}\n\ntry {\n  deepWalk(errorData);\n} catch (e) {}\n\nreturn [{ json: { jobId, errorMessage, internalApiKey } }];"
+        "method": "PATCH",
+        "url": "=http://api-service:3001/api/jobs/internal/{{ $('Parse Refine').first().json.jobId }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-Internal-Key",
+              "value": "={{ $('Parse Refine').first().json.secrets.internalApiKey }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ status: 'done', resultPaths: $json.paths, resultPath: $json.paths.pdf }) }}",
+        "options": {}
       },
-      "id": "c9d0e1f2-3a4b-4c5d-6e7f-c9d0e1f2a3b4",
+      "id": "done-refine",
+      "name": "Mark Done (refine)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1980,
+        700
+      ]
+    },
+    {
+      "parameters": {},
+      "id": "err-trigger",
+      "name": "Error Trigger",
+      "type": "n8n-nodes-base.errorTrigger",
+      "typeVersion": 1,
+      "position": [
+        200,
+        1000
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const errorData = $input.first().json;\nlet errorMessage = 'Unknown error occurred in pipeline';\nlet jobId = null;\nlet internalApiKey = null;\nlet stage = null;\n\ntry {\n  if (errorData?.execution?.error?.message) {\n    errorMessage = errorData.execution.error.message;\n  }\n} catch (e) {}\n\nfunction tryExtractFrom(value) {\n  if (!value || typeof value !== 'object') return;\n  if (!jobId && typeof value.jobId === 'string') jobId = value.jobId;\n  if (!stage && typeof value.stage === 'string') stage = value.stage;\n  if (!internalApiKey && value._secrets && typeof value._secrets.internalApiKey === 'string') internalApiKey = value._secrets.internalApiKey;\n  if (!internalApiKey && value.secrets && typeof value.secrets.internalApiKey === 'string') internalApiKey = value.secrets.internalApiKey;\n}\n\nfunction deepWalk(value, seen = new Set()) {\n  if (!value || typeof value !== 'object' || seen.has(value)) return;\n  seen.add(value);\n  tryExtractFrom(value);\n  if (jobId && internalApiKey && stage) return;\n  if (Array.isArray(value)) { for (const item of value) { deepWalk(item, seen); if (jobId && internalApiKey && stage) return; } return; }\n  for (const key of Object.keys(value)) { deepWalk(value[key], seen); if (jobId && internalApiKey && stage) return; }\n}\n\ntry { deepWalk(errorData); } catch (e) {}\n\nreturn [{ json: { jobId, errorMessage, internalApiKey, stage } }];"
+      },
+      "id": "extract-err",
       "name": "Extract Error Info",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [500, 600]
+      "position": [
+        440,
+        1000
+      ]
     },
     {
       "parameters": {
@@ -211,12 +611,90 @@
         "jsonBody": "={{ JSON.stringify({ status: 'error', errorMessage: $json.errorMessage }) }}",
         "options": {}
       },
-      "id": "d0e1f2a3-4b5c-4d6e-7f80-d0e1f2a3b4c5",
+      "id": "save-err",
       "name": "Update Status Error",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
-      "position": [750, 600],
+      "position": [
+        680,
+        1000
+      ],
       "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "if-layout-1",
+              "leftValue": "={{ $('Parse Layout').first().json.errorMessage }}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "empty"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "gate-layout",
+      "name": "Has Output (layout)",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1500,
+        480
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "if-refine-1",
+              "leftValue": "={{ $('Parse Refine').first().json.errorMessage }}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "empty"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "gate-refine",
+      "name": "Has Output (refine)",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1500,
+        700
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Auto Planning (LLM-free fallback): creates a minimal planning_result so the user can review/edit.\nconst prev = $('Build Planning Prompt').first().json;\nconst body = $input.first().json;\n\n// prev.userMessage contains the raw prompt text; keep only first line for title.\nconst topicLine = (prev.userMessage || '').split(/\\n/)[0].trim() || 'Тема презентации';\n\n// try to infer slideCount from userMessage if present\nlet count = 0;\nconst m = (prev.userMessage || '').match(/Desired slide count:\\s*(\\d+)/i);\nif (m) count = Number(m[1]) || 0;\nif (!count || count < 1) count = 5;\n\n// Extract per-slide prompts (if present)\nconst hints = [];\nconst re = /- Slide\\s+(\\d+):\\s*(.*)/g;\nlet mm;\nwhile ((mm = re.exec(prev.userMessage || '')) !== null) {\n  const idx = Number(mm[1]) - 1;\n  const text = (mm[2] || '').trim();\n  if (Number.isFinite(idx) && idx >= 0 && text) hints[idx] = text;\n}\n\nconst slides = [];\nfor (let i = 0; i < count; i++) {\n  const title = i === 0 ? topicLine : (hints[i] ? hints[i].slice(0, 80) : `Раздел ${i + 1}`);\n  const subtitle = i === 0 ? 'Короткий подзаголовок (можно изменить)' : '';\n  const blocks = [{ type: 'heading', text: title }];\n  if (i === 0) blocks.push({ type: 'subtitle', text: subtitle });\n  blocks.push({ type: 'text', text: hints[i] ? hints[i] : 'Опишите ключевую мысль этого слайда.' });\n\n  slides.push({ index: i, title, subtitle, blocks, speaker_notes: '' });\n}\n\nreturn [{ json: {\n  jobId: prev.jobId,\n  stage: prev.stage,\n  output: { slides },\n  errorMessage: null,\n  llmRequest: { systemPrompt: prev.systemPrompt, userMessage: prev.userMessage, mode: 'auto_planning' },\n  llmResponse: null,\n  secrets: prev.secrets,\n  attachmentMap: prev.attachmentMap || {},\n}}];"
+      },
+      "id": "auto-planning",
+      "name": "Auto Planning (no LLM)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        900,
+        80
+      ]
     }
   ],
   "connections": {
@@ -224,78 +702,215 @@
       "main": [
         [
           {
-            "node": "Update Status to Processing",
+            "node": "Switch by Stage",
             "type": "main",
             "index": 0
           }
         ]
       ]
     },
-    "Update Status to Processing": {
+    "Switch by Stage": {
       "main": [
         [
           {
-            "node": "Build LLM Prompt",
+            "node": "Build Planning Prompt",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Build Design Prompt",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Build Layout Prompt",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Build Refine Prompt",
             "type": "main",
             "index": 0
           }
         ]
       ]
     },
-    "Build LLM Prompt": {
+    "Build Planning Prompt": {
       "main": [
         [
           {
-            "node": "Call LLM API",
+            "node": "LLM Planning",
             "type": "main",
             "index": 0
           }
         ]
       ]
     },
-    "Call LLM API": {
+    "LLM Planning": {
       "main": [
         [
           {
-            "node": "Parse LLM Response",
-            "type": "main",
-            "index": 0
-          },
-          {
-            "node": "Save LLM Logs",
+            "node": "Parse Planning",
             "type": "main",
             "index": 0
           }
         ]
       ]
     },
-    "Parse LLM Response": {
+    "Parse Planning": {
       "main": [
         [
           {
-            "node": "Save Slide Data",
+            "node": "Save Planning Step",
             "type": "main",
             "index": 0
           }
         ]
       ]
     },
-    "Save Slide Data": {
+    "Build Design Prompt": {
       "main": [
         [
           {
-            "node": "Call Converter",
+            "node": "LLM Design",
             "type": "main",
             "index": 0
           }
         ]
       ]
     },
-    "Call Converter": {
+    "Build Layout Prompt": {
       "main": [
         [
           {
-            "node": "Update Status Done",
+            "node": "LLM Layout",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Refine Prompt": {
+      "main": [
+        [
+          {
+            "node": "LLM Refine",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "LLM Design": {
+      "main": [
+        [
+          {
+            "node": "Parse Design",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "LLM Layout": {
+      "main": [
+        [
+          {
+            "node": "Parse Layout",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "LLM Refine": {
+      "main": [
+        [
+          {
+            "node": "Parse Refine",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Design": {
+      "main": [
+        [
+          {
+            "node": "Save Design Step",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Layout": {
+      "main": [
+        [
+          {
+            "node": "Save Layout Step",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Refine": {
+      "main": [
+        [
+          {
+            "node": "Save Refine Step",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Save Layout Step": {
+      "main": [
+        [
+          {
+            "node": "Has Output (layout)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Save Refine Step": {
+      "main": [
+        [
+          {
+            "node": "Has Output (refine)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Convert (layout)": {
+      "main": [
+        [
+          {
+            "node": "Mark Done (layout)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Convert (refine)": {
+      "main": [
+        [
+          {
+            "node": "Mark Done (refine)",
             "type": "main",
             "index": 0
           }
@@ -318,6 +933,41 @@
         [
           {
             "node": "Update Status Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Has Output (layout)": {
+      "main": [
+        [
+          {
+            "node": "Convert (layout)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        []
+      ]
+    },
+    "Has Output (refine)": {
+      "main": [
+        [
+          {
+            "node": "Convert (refine)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        []
+      ]
+    },
+    "Auto Planning (no LLM)": {
+      "main": [
+        [
+          {
+            "node": "Save Planning Step",
             "type": "main",
             "index": 0
           }
