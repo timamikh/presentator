@@ -26,6 +26,8 @@ const {
   isStage,
   assertTransitionAllowed,
 } = require('./pipelineStages');
+const { insertLlmCallLog } = require('./llmLogger');
+const { createSnapshot } = require('./snapshots');
 
 async function loadJobAttachments(jobId) {
   const result = await query(
@@ -245,9 +247,33 @@ async function startStage({ jobId, stage, overrides = {} }) {
  *   - finds the latest "running" step for this stage and marks it done,
  *   - writes the output into the stage-specific column on jobs,
  *   - updates jobs.status to awaiting_<stage>_review (or 'done' for layout),
- *   - updates jobs.current_stage to mark a stop point.
+ *   - updates jobs.current_stage to mark a stop point,
+ *   - writes an observability row to presentator.llm_call_logs (idempotent
+ *     on step_id),
+ *   - creates an auto-snapshot in presentator.job_snapshots (best-effort).
+ *
+ * @param {Object} args
+ * @param {string} args.jobId
+ * @param {string} args.stage
+ * @param {Object} [args.output]
+ * @param {Object} [args.llmRequest]   raw request body to LLM (logged)
+ * @param {Object} [args.llmResponse]  raw response from LLM (logged)
+ * @param {string} [args.errorMessage]
+ * @param {string} [args.model]        LLM model name (for /metrics)
+ * @param {string} [args.provider]     LLM base URL (for /metrics)
+ * @param {number} [args.latencyMs]    measured end-to-end LLM latency
  */
-async function completeStage({ jobId, stage, output, llmRequest, llmResponse, errorMessage }) {
+async function completeStage({
+  jobId,
+  stage,
+  output,
+  llmRequest,
+  llmResponse,
+  errorMessage,
+  model,
+  provider,
+  latencyMs,
+}) {
   if (!isStage(stage)) {
     const err = new Error(`Unknown stage: ${stage}`);
     err.status = 400;
@@ -255,15 +281,23 @@ async function completeStage({ jobId, stage, output, llmRequest, llmResponse, er
   }
 
   const client = await pool.connect();
+  let stepId = null;
+  let stepAttempt = 1;
+  let nextStatus = 'done';
+  let jobUserId = null;
+  let systemPromptText = null;
+  let userMessageText = null;
   try {
     await client.query('BEGIN');
 
     const stepRes = await client.query(
-      `SELECT id, attempt FROM presentator.job_pipeline_steps
-        WHERE job_id = $1 AND stage = $2
-        ORDER BY attempt DESC
+      `SELECT s.id, s.attempt, j.user_id
+         FROM presentator.job_pipeline_steps s
+         JOIN presentator.jobs j ON j.id = s.job_id
+        WHERE s.job_id = $1 AND s.stage = $2
+        ORDER BY s.attempt DESC
         LIMIT 1
-        FOR UPDATE`,
+        FOR UPDATE OF s`,
       [jobId, stage],
     );
     if (stepRes.rows.length === 0) {
@@ -272,8 +306,11 @@ async function completeStage({ jobId, stage, output, llmRequest, llmResponse, er
       throw err;
     }
     const step = stepRes.rows[0];
+    stepId = step.id;
+    stepAttempt = step.attempt;
+    jobUserId = step.user_id;
 
-    const nextStatus = errorMessage ? 'error' : 'done';
+    nextStatus = errorMessage ? 'error' : 'done';
     await client.query(
       `UPDATE presentator.job_pipeline_steps
           SET status = $1, output = $2, llm_request = $3, llm_response = $4,
@@ -326,7 +363,62 @@ async function completeStage({ jobId, stage, output, llmRequest, llmResponse, er
     }
 
     await client.query('COMMIT');
-    return { stage, attempt: step.attempt, status: nextStatus };
+
+    // Best-effort observability writes (outside the main TX): a failed
+    // metrics insert must NEVER break the pipeline callback.
+    if (llmRequest && typeof llmRequest === 'object') {
+      systemPromptText =
+        typeof llmRequest.systemPrompt === 'string'
+          ? llmRequest.systemPrompt
+          : null;
+      userMessageText =
+        typeof llmRequest.userMessage === 'string'
+          ? llmRequest.userMessage
+          : null;
+    }
+
+    await insertLlmCallLog(
+      {
+        jobId,
+        stepId,
+        userId: jobUserId,
+        stage,
+        attempt: stepAttempt,
+        model: model || null,
+        provider: provider || null,
+        systemPrompt: systemPromptText,
+        userMessage: userMessageText,
+        rawRequest: llmRequest || null,
+        rawResponse: llmResponse || null,
+        latencyMs: latencyMs || null,
+        errorMessage: errorMessage || null,
+      },
+      { query },
+    );
+
+    // Auto-snapshot AFTER a successful stage so users can roll back to any
+    // intermediate state. Failures are intentionally not snapshotted.
+    if (!errorMessage && output !== undefined && output !== null) {
+      try {
+        await createSnapshot(
+          {
+            jobId,
+            kind: 'auto',
+            stage,
+            attempt: stepAttempt,
+            createdByStepId: stepId,
+            createdByUserId: jobUserId,
+          },
+          { query },
+        );
+      } catch (snapErr) {
+        console.error(
+          `auto-snapshot failed for job=${jobId} stage=${stage}: ${snapErr.message}`,
+        );
+      }
+    }
+
+    return { stage, attempt: stepAttempt, status: nextStatus };
   } catch (err) {
     try { await client.query('ROLLBACK'); } catch {}
     throw err;

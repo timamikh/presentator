@@ -6,6 +6,7 @@ import DesignBriefForm from '../components/design/DesignBriefForm.vue'
 import SlidePromptsEditor from '../components/SlidePromptsEditor.vue'
 import PromptsSettingsModal from '../components/PromptsSettingsModal.vue'
 import StoragePicker from '../components/storage/StoragePicker.vue'
+import DraftsPanel from '../components/DraftsPanel.vue'
 import { usePromptAggregator } from '../composables/usePromptAggregator'
 import {
   defaultDesignBrief,
@@ -107,6 +108,45 @@ function kindLabel(kind) {
   return { image: 'изображение', document: 'документ', other: 'файл' }[kind] || 'файл'
 }
 
+// ── Drafts integration ─────────────────────────────────────────────
+//
+// DraftsPanel needs two callbacks:
+//   • collectPayload() — capture current form state for save/PUT
+//   • on @apply — load draft fields back into form state
+//
+// We do NOT round-trip files (one-shot uploads): they live only in browser
+// memory until submit. Library attachments are fully restorable.
+function collectDraftPayload() {
+  return {
+    prompt: prompt.value,
+    slide_count: slideCount.value,
+    slide_prompts: slidePrompts.value,
+    presentation_settings: presentationSettings.value,
+    system_prompt: systemPrompt.value || null,
+    design_input: designBriefForm.value,
+    design_brief: aggregatedDesignBrief.value,
+    attachments: libraryAttachments.value.map((a) => ({
+      attachmentId: a.id,
+      description: a.description,
+    })),
+    pipeline_version: 2,
+  }
+}
+
+function applyDraft(draft) {
+  prompt.value = draft.prompt || ''
+  slideCount.value = Number(draft.slide_count) || 0
+  slidePrompts.value = Array.isArray(draft.slide_prompts) ? draft.slide_prompts : []
+  systemPrompt.value = draft.system_prompt || ''
+  if (draft.design_input && typeof draft.design_input === 'object') {
+    designBriefForm.value = { ...defaultDesignBrief(), ...draft.design_input }
+  }
+  // Library attachments: backend stored {attachmentId, description}; we need
+  // full row info from the storage picker. We don't re-fetch here — user can
+  // re-select attachments after loading a draft. For now, drop them.
+  libraryAttachments.value = []
+}
+
 async function handleSubmit() {
   if (!prompt.value.trim()) return
   error.value = ''
@@ -136,6 +176,12 @@ async function handleSubmit() {
     </router-link>
 
     <h1 class="text-2xl font-bold text-gray-900 mb-6">Новая презентация</h1>
+
+    <DraftsPanel
+      class="mb-6"
+      :collect-payload="collectDraftPayload"
+      @apply="applyDraft"
+    />
 
     <form @submit.prevent="handleSubmit" class="space-y-6">
       <div class="grid grid-cols-1 lg:grid-cols-[minmax(0,1.1fr)_minmax(0,1.2fr)] gap-6">

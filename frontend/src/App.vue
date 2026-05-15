@@ -28,6 +28,13 @@ function logout() {
         >
           Хранилище
         </router-link>
+        <router-link
+          to="/metrics"
+          class="text-sm text-gray-600 hover:text-blue-600 transition-colors"
+          active-class="text-blue-600 font-medium"
+        >
+          Метрики
+        </router-link>
       </div>
       <button
         @click="logout"

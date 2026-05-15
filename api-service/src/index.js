@@ -9,6 +9,9 @@ const foldersRouter = require('./routes/folders');
 const attachmentsRouter = require('./routes/attachments');
 const filesRouter = require('./routes/files');
 const designPresetsRouter = require('./routes/designPresets');
+const metricsRouter = require('./routes/metrics');
+const draftsRouter = require('./routes/drafts');
+const snapshotsRouter = require('./routes/snapshots');
 const { markStaleJobsAsError } = require('./services/staleJobSweeper');
 
 const app = express();
@@ -25,11 +28,16 @@ app.get('/health', (_req, res) => {
 
 app.use('/api/auth', authRouter);
 app.use('/api/jobs', jobsRouter);
+// Sub-router for job snapshots — mounted on the same /api/jobs/:id path so
+// snapshot URLs read naturally (/api/jobs/<id>/snapshots/...).
+app.use('/api/jobs/:id/snapshots', snapshotsRouter);
 app.use('/api/settings', settingsRouter);
 app.use('/api/folders', foldersRouter);
 app.use('/api/attachments', attachmentsRouter);
 app.use('/api/files', filesRouter);
 app.use('/api/design-presets', designPresetsRouter);
+app.use('/api/metrics', metricsRouter);
+app.use('/api/drafts', draftsRouter);
 
 app.use((err, _req, res, _next) => {
   console.error('Unhandled error:', err.message);

@@ -8,6 +8,7 @@ import PipelineStepper from '../components/pipeline/PipelineStepper.vue'
 import PlanningReview from '../components/pipeline/PlanningReview.vue'
 import DesignReview from '../components/pipeline/DesignReview.vue'
 import RefinementPanel from '../components/pipeline/RefinementPanel.vue'
+import VersionsPanel from '../components/VersionsPanel.vue'
 
 const route = useRoute()
 const job = ref(null)
@@ -126,6 +127,13 @@ async function refine({ prompt, slideIndex }) {
   }
 }
 
+async function onSnapshotRestored() {
+  // After a snapshot restore, re-fetch the job + steps so the UI reflects the
+  // restored slide_data / planning_result / design_brief.
+  await fetchJob()
+  await fetchSteps()
+}
+
 async function downloadFile(format) {
   try {
     const response = await client.get(`/jobs/${route.params.id}/download?format=${format}`, {
@@ -204,6 +212,13 @@ onUnmounted(() => {
         :status="job.status"
         :current-stage="job.current_stage"
         class="mb-6"
+      />
+
+      <VersionsPanel
+        v-if="isV2"
+        :job-id="route.params.id"
+        class="mb-6"
+        @restored="onSnapshotRestored"
       />
 
       <!-- Stage 1 review -->

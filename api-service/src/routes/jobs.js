@@ -526,14 +526,25 @@ router.patch('/internal/:id', internalAuth, async (req, res) => {
 });
 
 // Stage-aware callback: PATCH /api/jobs/internal/:id/steps/:stage
-// body: { output, llmRequest?, llmResponse?, errorMessage? }
+// body: {
+//   output, llmRequest?, llmResponse?, errorMessage?,
+//   model?, provider?, latencyMs?   // observability fields, optional
+// }
 router.patch('/internal/:id/steps/:stage', internalAuth, async (req, res) => {
   try {
     const { id, stage } = req.params;
     if (!isStage(stage)) {
       return res.status(400).json({ error: `Unknown stage: ${stage}` });
     }
-    const { output, llmRequest, llmResponse, errorMessage } = req.body || {};
+    const {
+      output,
+      llmRequest,
+      llmResponse,
+      errorMessage,
+      model,
+      provider,
+      latencyMs,
+    } = req.body || {};
     const result = await completeStage({
       jobId: id,
       stage,
@@ -541,6 +552,9 @@ router.patch('/internal/:id/steps/:stage', internalAuth, async (req, res) => {
       llmRequest,
       llmResponse,
       errorMessage,
+      model,
+      provider,
+      latencyMs,
     });
     return res.json(result);
   } catch (err) {

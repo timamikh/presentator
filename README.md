@@ -159,7 +159,10 @@ presentator/
 │   ├── 07-job-attachments.sql        # Связь jobs ↔ attachments + snapshot описания
 │   ├── 08-attachment-extraction.sql  # extraction_status / extracted_at / extraction_error
 │   ├── 09-pipeline-stages.sql        # pipeline_version, current_stage, planning_result, design_brief, design_input, job_pipeline_steps
-│   └── 10-design-presets.sql         # design_presets (сохранённые дизайн-брифы)
+│   ├── 10-design-presets.sql         # design_presets (сохранённые дизайн-брифы)
+│   ├── 11-llm-call-logs.sql          # llm_call_logs (raw observability + token counts)
+│   ├── 12-job-snapshots.sql          # job_snapshots (версии задач + откат)
+│   └── 13-job-drafts.sql             # job_drafts + job_draft_versions (черновики формы)
 │
 ├── api-service/
 │   ├── Dockerfile
@@ -179,13 +182,26 @@ presentator/
 │       │   ├── files.js         # GET /api/files/attachment/:id (приватная отдача)
 │       │   └── designPresets.js # CRUD сохранённых дизайн-брифов
 │       ├── services/
-│       │   ├── pipeline.js              # startStage / completeStage — ядро staged-пайплайна
-│       │   └── pipeline.test.js
+│       │   ├── pipeline.js              # startStage / completeStage — ядро staged-пайплайна (+ авто-snapshot + LLM log)
+│       │   ├── pipeline.test.js
+│       │   ├── pipelineStages.js
+│       │   ├── staleJobSweeper.js
+│       │   ├── staleJobSweeper.test.js
+│       │   ├── llmLogger.js              # Запись llm_call_logs (идемпотентно по step_id)
+│       │   ├── llmLogger.test.js
+│       │   ├── snapshots.js              # createSnapshot / listSnapshots / restoreSnapshot
+│       │   ├── snapshots.test.js
+│       │   ├── drafts.js                 # CRUD драфтов формы + история версий
+│       │   ├── drafts.test.js
+│       │   ├── metrics.js                # SQL-агрегаты для /api/metrics/*
+│       │   └── metrics.test.js
 │       ├── utils/
 │       │   ├── attachmentTokens.js       # Подмена {{attachment:<ref>}} в HTML/CSS
 │       │   ├── attachmentTokens.test.js
 │       │   ├── promptDefaults.js         # 4 дефолтных промта для этапов
-│       │   └── promptDefaults.test.js
+│       │   ├── promptDefaults.test.js
+│       │   ├── tokenizer.js              # Локальный подсчёт токенов (cl100k_base)
+│       │   └── tokenizer.test.js
 │       └── scripts/
 │           └── seed-user.js
 │
@@ -215,6 +231,8 @@ presentator/
 │       │   ├── SystemPromptModal.vue    # Legacy, оставлен для совместимости
 │       │   ├── SlidePromptsEditor.vue   # Промпты по отдельным слайдам
 │       │   ├── PresentationSettings.vue # Legacy шрифты/цвета (для v1)
+│       │   ├── VersionsPanel.vue        # Снимки задачи + откат (на /jobs/:id)
+│       │   ├── DraftsPanel.vue          # Черновики формы + история версий (на /create)
 │       │   ├── design/
 │       │   │   └── DesignBriefForm.vue  # Многотабный редактор дизайн-брифа
 │       │   ├── pipeline/
@@ -240,7 +258,8 @@ presentator/
 │           ├── DashboardView.vue
 │           ├── CreateJobView.vue
 │           ├── JobStatusView.vue
-│           └── StorageView.vue          # Древовидное хранилище вложений
+│           ├── StorageView.vue          # Древовидное хранилище вложений
+│           └── MetricsView.vue          # Метрики и токены (графики chart.js)
 │
 ├── n8n-workflows/
 │   └── presentator-pipeline.json    # v2: Switch по stage + 4 ветки
@@ -334,6 +353,50 @@ presentator/
 - `default_refine_prompt` — режим доработки.
 
 Если ключ пуст, API сидит дефолтное значение из `api-service/src/utils/promptDefaults.js`. Старый ключ `default_system_prompt` отмаплен на `default_layout_prompt` (для обратной совместимости с legacy эндпоинтом `/api/settings/system-prompt`).
+
+**llm_call_logs** — сырое observability-хранилище всех LLM-вызовов (новое)
+
+| Колонка | Тип | Описание |
+|---------|-----|----------|
+| id | UUID (PK) | gen_random_uuid() |
+| job_id | UUID (FK → jobs, ON DELETE CASCADE) | |
+| step_id | UUID (FK → job_pipeline_steps, ON DELETE SET NULL) | Привязка к attempt этапа |
+| user_id | UUID (FK → users) | Для запросов /api/metrics |
+| stage | VARCHAR(30) | `planning` / `design` / `layout` / `refine_layout` |
+| attempt | INTEGER | Номер попытки этапа |
+| model | TEXT | Имя модели LLM |
+| provider | TEXT | Base URL провайдера |
+| system_prompt / user_message | TEXT | Сырые тексты для отладки |
+| raw_request / raw_response | JSONB | Полный payload в/из LLM |
+| prompt_tokens / completion_tokens | INTEGER | Подсчитано локально (gpt-tokenizer / cl100k_base) |
+| total_tokens | INTEGER (STORED) | Сумма prompt + completion |
+| tokens_source | VARCHAR(20) | `estimated` / `provider` / `mixed` |
+| finish_reason | TEXT | `stop` / `length` / `abort` / ... |
+| latency_ms | INTEGER | Измерено в Parse-нодах n8n |
+| error_message | TEXT | |
+| created_at | TIMESTAMPTZ | |
+| `UNIQUE (step_id) WHERE step_id IS NOT NULL` | | Идемпотентность для n8n-ретраев |
+
+**job_snapshots** — точечные снимки состояния задачи (для отката/версионирования)
+
+| Колонка | Тип | Описание |
+|---------|-----|----------|
+| id | UUID (PK) | |
+| job_id | UUID (FK → jobs, ON DELETE CASCADE) | |
+| version | INTEGER | Инкрементный per job, `UNIQUE (job_id, version)` |
+| kind | VARCHAR(20) | `auto` (после успешного этапа) / `manual` (ручная) / `restore` (точка отката) |
+| label | TEXT | Человекочитаемое описание (генерируется автоматически для auto) |
+| stage / status / current_stage | | Состояние пайплайна на момент снимка |
+| prompt / slide_count / slide_prompts / presentation_settings / system_prompt | | Полная копия user input |
+| design_input / planning_result / design_brief / slide_data | JSONB | Полные снимки всех stage-outputs |
+| result_paths | JSONB | |
+| created_by_step_id | UUID | Привязка к `job_pipeline_steps` (для auto) |
+| created_by_user_id | UUID | Кто создал снимок (для manual/restore) |
+| created_at | TIMESTAMPTZ | |
+
+**job_drafts** + **job_draft_versions** — черновики формы создания на `/create`
+
+`job_drafts` — текущая (head) версия черновика пользователя; `job_draft_versions` — история всех правок. Каждый PUT инкрементит `head_version` и пишет новую строку в `job_draft_versions`. Откат к версии = копирование её содержимого в head + строка с `kind='restore'`. Файлы не входят в drafts (one-shot uploads существуют только в браузере); library-attachments — да.
 
 **design_presets** — сохранённые пользователем дизайн-брифы
 
@@ -498,6 +561,23 @@ LLM генерирует HTML/CSS-слайды в JSON-формате:
 | POST | /api/design-presets | Создать/обновить пресет `{name, brief}` (uniq by `(user_id, name)`) |
 | PATCH | /api/design-presets/:id | Переименовать / обновить бриф |
 | DELETE | /api/design-presets/:id | Удалить пресет |
+| GET | /api/metrics/summary?days=N | Суммарные метрики (calls / tokens / latency / errors) |
+| GET | /api/metrics/by-stage?days=N | Разбивка по этапам пайплайна |
+| GET | /api/metrics/by-day?days=N | Дневные агрегаты для графика |
+| GET | /api/metrics/by-model?days=N | Разбивка по моделям LLM |
+| GET | /api/metrics/recent-calls?limit=N | Лента последних LLM-вызовов |
+| GET | /api/metrics/calls/:id | Сырые `raw_request` / `raw_response` одного вызова |
+| GET | /api/jobs/:id/snapshots | Список снимков задачи |
+| GET | /api/jobs/:id/snapshots/:version | Один снимок (полный body) |
+| POST | /api/jobs/:id/snapshots | Ручной снимок `{label?}` |
+| POST | /api/jobs/:id/snapshots/:version/restore | Откатить задачу к версии |
+| GET | /api/drafts | Список черновиков формы текущего пользователя |
+| POST | /api/drafts | Создать черновик `{name, prompt?, design_input?, …}` |
+| GET | /api/drafts/:id | Текущее (head) состояние черновика |
+| PUT | /api/drafts/:id | Обновить черновик (бампит head_version, пишет новую версию) |
+| DELETE | /api/drafts/:id | Удалить черновик и всю историю |
+| GET | /api/drafts/:id/versions | История версий черновика |
+| POST | /api/drafts/:id/versions/:version/restore | Откатить черновик к версии |
 
 ### Внутренние (X-Internal-Key) эндпоинты
 
@@ -574,9 +654,41 @@ docker compose logs -f n8n           # Оркестратор
 docker compose logs -f converter-service  # Конвертер
 ```
 
-Логи LLM-взаимодействий доступны в UI: страница задачи → раскрывающийся блок «LLM Request/Response».
+Логи LLM-взаимодействий доступны в UI:
+- страница задачи → раскрывающийся блок «LLM Request/Response» (последний layout/refine attempt);
+- страница **«Метрики»** (`/metrics`) → лента всех LLM-вызовов с фильтрами + сырые `raw_request` / `raw_response` для каждого.
 
 Визуальные логи workflow: http://localhost/n8n/ → Executions.
+
+## Observability и контроль версий
+
+Реализация в этой ветке расширила систему тремя независимыми, но связанными слоями:
+
+### 1. Сырое хранилище LLM-вызовов (`presentator.llm_call_logs`)
+
+Каждый успешный или ошибочный LLM-вызов в `pipeline.completeStage` пишется одной строкой в `llm_call_logs` (идемпотентно по `step_id` — n8n-ретраи не дублируют записи). В таблице хранятся:
+- сырые `raw_request` / `raw_response` (JSONB),
+- `system_prompt` / `user_message` (плоский текст для быстрого поиска),
+- `prompt_tokens` / `completion_tokens` / `total_tokens` (подсчитаны локально через `gpt-tokenizer` — cl100k_base, не доверяем `usage` от gateway),
+- `tokens_source` (`estimated` / `provider` / `mixed`),
+- `model`, `provider`, `latency_ms`, `finish_reason`, `error_message`.
+
+Доступ через `/api/metrics/*` (только владелец задачи). На странице `/metrics` — графики `chart.js`: токены по дням, по этапам, таблица по моделям, лента последних 50 вызовов.
+
+> **Hotfix**: первый прогон показал, что `INSERT ... ON CONFLICT (step_id) DO UPDATE` без повтора предиката partial-индекса (`WHERE step_id IS NOT NULL`) отвергается Postgres'ом — это молча проглатывалось `try/catch` логгера, в итоге `llm_call_logs` оставалась пустой при заполненных snapshots. Поправлено в `services/llmLogger.js`; добавлен регрессионный assert в `llmLogger.test.js`. Подробности и шаги верификации — в `CHANGES.md` (раздел «Известные проблемы → 1) Verify»).
+
+### 2. Версионирование задач (`presentator.job_snapshots`)
+
+После каждого успешного этапа `pipeline.completeStage` создаёт **auto-snapshot** — полную копию `prompt` + `slide_count` + `slide_prompts` + `design_input` + `planning_result` + `design_brief` + `slide_data` + `status` + `current_stage`. Пользователь может:
+- посмотреть полную историю на странице `/jobs/:id` (компонент `VersionsPanel`),
+- создать **manual snapshot** с меткой (`POST /api/jobs/:id/snapshots`),
+- откатить задачу к любой версии (`POST /api/jobs/:id/snapshots/:version/restore`). После отката пишется новый snapshot с `kind='restore'` — история остаётся линейной (audit-friendly).
+
+### 3. Черновики формы создания (`presentator.job_drafts` + `job_draft_versions`)
+
+На странице `/create` пользователь может сохранить состояние формы как именованный черновик и вернуться к нему позже. Каждое сохранение бампит `head_version` и пишет новую строку в `job_draft_versions` — то есть у каждого черновика своя история. Откат к версии работает так же, как и у задач: копирует содержимое в head + пишет `kind='restore'`.
+
+Файлы (one-shot uploads) в черновиках **не сохраняются** — они живут только в браузере до submit. Library-attachments сохраняются по `attachmentId` + описание.
 
 ## Хранилище вложений и интеграция с LLM
 
@@ -651,6 +763,12 @@ docker compose exec -T postgres \
   psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -f - < init-db/09-pipeline-stages.sql
 docker compose exec -T postgres \
   psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -f - < init-db/10-design-presets.sql
+docker compose exec -T postgres \
+  psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -f - < init-db/11-llm-call-logs.sql
+docker compose exec -T postgres \
+  psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -f - < init-db/12-job-snapshots.sql
+docker compose exec -T postgres \
+  psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -f - < init-db/13-job-drafts.sql
 ```
 
 ## Контекст для LLM (доработки)
