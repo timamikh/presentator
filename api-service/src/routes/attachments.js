@@ -8,6 +8,7 @@ const { v4: uuidv4 } = require('uuid');
 const config = require('../config');
 const { pool, query } = require('../db');
 const { authRequired, internalAuth } = require('../middleware/auth');
+const { parseIdsParam } = require('../utils/idsParam');
 
 const LIBRARY_DIR = path.join('/data', 'library');
 const REF_PREFIX = 'att_';
@@ -152,6 +153,37 @@ router.get('/', authRequired, async (req, res) => {
     return res.json(result.rows);
   } catch (err) {
     console.error('List attachments error:', err.message);
+    return res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// GET /api/attachments/by-ids?ids=a,b,c
+//
+// Batch lookup used by the /create page when a user loads a saved draft:
+// drafts store only { attachmentId, description }, so we need to re-hydrate
+// the full row (original_name, kind, ref, extraction_status, …) to render
+// the library-attachment cards. Without this endpoint applyDraft() had to
+// drop libraryAttachments entirely (see CHANGES.md "library-attachments
+// не восстанавливаются из черновика").
+router.get('/by-ids', authRequired, async (req, res) => {
+  try {
+    const ids = parseIdsParam(req.query?.ids);
+    if (ids.length === 0) {
+      return res.json([]);
+    }
+    const result = await query(
+      `SELECT
+         id, folder_id, ref, original_name, mime_type, file_size, kind,
+         description, width, height, extraction_status, extracted_at,
+         extraction_error, content_summary, created_at, updated_at
+       FROM presentator.attachments
+       WHERE user_id = $1 AND id = ANY($2::uuid[])
+       ORDER BY created_at DESC`,
+      [req.user.id, ids],
+    );
+    return res.json(result.rows);
+  } catch (err) {
+    console.error('Batch by-ids attachments error:', err.message);
     return res.status(500).json({ error: 'Internal server error' });
   }
 });

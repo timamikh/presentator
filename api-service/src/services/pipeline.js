@@ -28,11 +28,19 @@ const {
 } = require('./pipelineStages');
 const { insertLlmCallLog } = require('./llmLogger');
 const { createSnapshot } = require('./snapshots');
+const { buildAttachmentPayloadFromRows } = require('./attachmentPayload');
 
+// SELECT must also tow `extracted_text` (full document body, capped at
+// EXTRACTOR_TEXT_LIMIT_CHARS=50000 in extractor-service). Before this
+// change only `content_summary` (1500 char window) was shipped, and only
+// on the planning stage — design and layout received attachments without
+// any body text, which forced the LLM to fabricate the contents of
+// uploaded documents.
 async function loadJobAttachments(jobId) {
   const result = await query(
     `SELECT a.id, a.ref, a.original_name, a.storage_path, a.mime_type,
-            a.file_size, a.kind, a.width, a.height, a.content_summary,
+            a.file_size, a.kind, a.width, a.height,
+            a.content_summary, a.extracted_text,
             ja.description_snapshot, ja.sort_order
        FROM presentator.job_attachments ja
        JOIN presentator.attachments a ON a.id = ja.attachment_id
@@ -41,30 +49,7 @@ async function loadJobAttachments(jobId) {
     [jobId],
   );
 
-  const attachments = [];
-  const attachmentMap = {};
-
-  for (const row of result.rows) {
-    attachments.push({
-      ref: row.ref,
-      kind: row.kind,
-      filename: row.original_name,
-      mimeType: row.mime_type,
-      fileSize: row.file_size,
-      description: row.description_snapshot || null,
-      summary: row.content_summary || null,
-      width: row.width,
-      height: row.height,
-    });
-    attachmentMap[row.ref] = {
-      id: row.id,
-      localPath: row.storage_path,
-      mimeType: row.mime_type,
-      filename: row.original_name,
-    };
-  }
-
-  return { attachments, attachmentMap };
+  return buildAttachmentPayloadFromRows(result.rows, {});
 }
 
 async function loadAllStages(jobId) {

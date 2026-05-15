@@ -187,6 +187,8 @@ presentator/
 │       │   ├── pipelineStages.js
 │       │   ├── staleJobSweeper.js
 │       │   ├── staleJobSweeper.test.js
+│       │   ├── attachmentPayload.js     # Pure: SQL-rows → {attachments, attachmentMap} с полем content
+│       │   ├── attachmentPayload.test.js
 │       │   ├── llmLogger.js              # Запись llm_call_logs (идемпотентно по step_id)
 │       │   ├── llmLogger.test.js
 │       │   ├── snapshots.js              # createSnapshot / listSnapshots / restoreSnapshot
@@ -198,7 +200,11 @@ presentator/
 │       ├── utils/
 │       │   ├── attachmentTokens.js       # Подмена {{attachment:<ref>}} в HTML/CSS
 │       │   ├── attachmentTokens.test.js
-│       │   ├── promptDefaults.js         # 4 дефолтных промта для этапов
+│       │   ├── documentsBlock.js         # Pure: attachments[] → <DOCUMENTS>…</DOCUMENTS> блок для LLM-промтов
+│       │   ├── documentsBlock.test.js    # Canonical-источник алгоритма; inline-копия в n8n build-*-prompt
+│       │   ├── idsParam.js               # Парсер ?ids=a,b,c для batch-lookup эндпоинтов (UUID-валидация)
+│       │   ├── idsParam.test.js
+│       │   ├── promptDefaults.js         # 4 дефолтных промта для этапов (+ правила работы с <DOCUMENTS>)
 │       │   ├── promptDefaults.test.js
 │       │   ├── tokenizer.js              # Локальный подсчёт токенов (cl100k_base)
 │       │   └── tokenizer.test.js
@@ -249,10 +255,18 @@ presentator/
 │       │   ├── usePromptAggregator.test.js
 │       │   ├── useDesignBriefAggregator.js     # JSON-бриф + текстовый preview
 │       │   ├── useDesignBriefAggregator.test.js
+│       │   ├── useDraftAttachments.js          # Восстановление library-attachments из драфта (batch-fetch)
+│       │   ├── useDraftAttachments.test.js
 │       │   └── useStorage.js                   # CRUD-обёртки для хранилища
 │       ├── utils/
 │       │   ├── assetPaths.js            # rewriteUploadAssetPaths + rewriteAttachmentTokens
-│       │   └── assetPaths.test.js
+│       │   ├── assetPaths.test.js
+│       │   ├── formatters.js            # fmtNum / fmtTimestamp / stageLabel / kindBadge
+│       │   ├── formatters.test.js
+│       │   ├── metricsChart.js          # Pure data-shaping для chart.js: byDay/byStage/sortSnapshots
+│       │   ├── metricsChart.test.js
+│       │   ├── slideScale.js            # Расчёт scale iframe-превью
+│       │   └── slideScale.test.js
 │       └── views/
 │           ├── LoginView.vue
 │           ├── DashboardView.vue
@@ -552,6 +566,7 @@ LLM генерирует HTML/CSS-слайды в JSON-формате:
 | PATCH | /api/folders/:id | Переименовать / переместить (с защитой от циклов) |
 | DELETE | /api/folders/:id?force=true | Удалить (по умолчанию 409 если непуста) |
 | GET | /api/attachments?folderId=&q=&kind= | Список вложений (включая `extraction_status`) |
+| GET | /api/attachments/by-ids?ids=a,b,c | Batch-lookup по UUID-списку (используется при восстановлении драфта). UUID-валидация, cap 100, фильтр по `user_id`. |
 | POST | /api/attachments | Загрузить вложение (триггерит extractor-service асинхронно) |
 | PATCH | /api/attachments/:id | Обновить description / folderId / original_name |
 | POST | /api/attachments/:id/reextract | Повторно прогнать через extractor (`extraction_status='pending'` + force) |
@@ -773,6 +788,20 @@ docker compose exec -T postgres \
 
 ## Контекст для LLM (доработки)
 
+### Передача attachments на все этапы (важно)
+
+- API-сервис в `api-service/src/services/pipeline.js` → `loadJobAttachments` тащит из БД полную тройку (`extracted_text`, `content_summary`, `description_snapshot`) и через pure-helper `services/attachmentPayload.js` собирает массив, где у каждого attachment есть поле `content` (= первое непустое из `extracted_text` → `content_summary` → `description_snapshot`, обрезанное до 50k chars).
+- Эти `attachments` уходят в **webhook payload каждого этапа** (planning / design / layout / refine_layout) — не только planning.
+- В n8n каждая `build-*-prompt` нода через свою inline-копию `documentsBlock.js` собирает блок:
+  ```
+  <DOCUMENTS>
+  [ref=att_xxx, kind=document, filename=agenda.pdf]
+  …full extracted body up to per-stage cap…
+  </DOCUMENTS>
+  ```
+  Пер-stage caps (`maxCharsPerDoc / maxTotalChars`): planning `8000 / 24000`, design `6000 / 18000`, layout `6000 / 18000`, refine `4000 / 12000`. Менять — в `documentsBlock.js` (canonical) **и** в inline-копиях в `n8n-workflows/presentator-pipeline.json`. Регрессионный тест — `documentsBlock.test.js`.
+- Дефолтные промты в `api-service/src/utils/promptDefaults.js` имеют явные правила работы с `<DOCUMENTS>` и запреты на обобщение списков/дат/расписаний. Инварианты закреплены в `promptDefaults.test.js`.
+
 ### Ключевые архитектурные решения
 
 - **Staged pipeline (v2)**: генерация разбита на Planning → Design → Layout → Render. Между этапами — точки остановки (`awaiting_planning_review`, `awaiting_design_review`), где пользователь подтверждает или правит промежуточный результат. Каждый этап логируется отдельной строкой в `job_pipeline_steps` (по строке на attempt → история refinement сохраняется). Старые задачи с `pipeline_version=1` продолжают работать на однопроходном workflow (n8n Switch falls through to legacy branch).
@@ -811,6 +840,7 @@ docker compose exec -T postgres \
 
 ### Известные ограничения
 
+- **Качество финальной презентации — основная нерешённая проблема**: после прогона мая 2026 пользователь отметил, что дизайн «кривой и некрасивый», текст местами не читается (контраст/размер/наложение), изображения скомпонованы неправильно (пропорции, конфликт с текстом), содержание слабое. Технически пайплайн работает (данные доходят до LLM, метрики/снапшоты пишутся) — проблема в качестве промтов / модели / CSS-фреймворка / converter-сервиса. Подробности — в `CHANGES.md`, план фиксов составляется отдельно.
 - **Нет регистрации**: Только seed-пользователь
 - **JWT в localStorage**: Для production → httpOnly cookie
 - **Нет rate limiting**
@@ -819,7 +849,7 @@ docker compose exec -T postgres \
 - **PPTX = скриншоты**: Текст в PPTX не редактируемый (растровые изображения)
 - **Время генерации**: 3 LLM-вызова в staged pipeline → суммарное время x3 vs. legacy. Состояние видно в UI через степпер; HTTP-таймауты у LLM-нод n8n подняты до 180–240с.
 - **Refinement пока только для layout**: режим доработки на текущем этапе ре-генерирует только финальный HTML. Refinement планирования / дизайна планируется как следующий шаг.
-- **Document summarization**: на первом этапе extractor подаёт `content_summary = первые 1500 символов`. LLM-summarization (через тот же `_secrets`) — следующий шаг.
+- **Document summarization**: на первом этапе extractor подаёт `content_summary = первые 1500 символов`. С итерации quality/attachments пайплайн передаёт в LLM полный `extracted_text` (до 50k chars) через блок `<DOCUMENTS>` в user-message, поэтому `content_summary` теперь используется только как fallback. LLM-summarization — отдельный задел.
 
 ### Частые задачи при доработке
 

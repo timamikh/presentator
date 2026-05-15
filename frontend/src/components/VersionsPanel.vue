@@ -11,6 +11,12 @@
 
 import { ref, computed, onMounted, watch } from 'vue'
 import client from '../api/client'
+import {
+  fmtTimestamp as fmtDate,
+  stageLabel,
+  kindBadge,
+} from '../utils/formatters'
+import { sortSnapshotsByVersionDesc } from '../utils/metricsChart'
 
 const props = defineProps({
   jobId: { type: String, required: true },
@@ -26,36 +32,7 @@ const manualLabel = ref('')
 const showCreate = ref(false)
 const confirmingVersion = ref(null)
 
-const STAGE_LABELS = {
-  planning: 'Планирование',
-  design: 'Дизайн',
-  layout: 'Верстка',
-  refine_layout: 'Доработка',
-}
-
-const KIND_BADGE = {
-  auto: { label: 'auto', cls: 'bg-blue-100 text-blue-700' },
-  manual: { label: 'manual', cls: 'bg-purple-100 text-purple-700' },
-  restore: { label: 'restore', cls: 'bg-amber-100 text-amber-700' },
-}
-
-const sortedSnapshots = computed(() =>
-  [...snapshots.value].sort((a, b) => b.version - a.version),
-)
-
-function fmtDate(value) {
-  if (!value) return ''
-  return new Date(value).toLocaleString('ru-RU', {
-    day: '2-digit',
-    month: 'short',
-    hour: '2-digit',
-    minute: '2-digit',
-  })
-}
-
-function stageLabel(stage) {
-  return stage ? STAGE_LABELS[stage] || stage : '—'
-}
+const sortedSnapshots = computed(() => sortSnapshotsByVersionDesc(snapshots.value))
 
 async function fetchSnapshots() {
   if (!props.jobId) return
@@ -158,10 +135,10 @@ defineExpose({ refresh: fetchSnapshots })
           <div class="flex items-center gap-2 mb-0.5">
             <span class="text-xs font-mono text-gray-600">v{{ snap.version }}</span>
             <span
-              :class="KIND_BADGE[snap.kind]?.cls || 'bg-gray-100 text-gray-700'"
+              :class="kindBadge(snap.kind).cls"
               class="inline-block text-[10px] font-medium px-1.5 py-0.5 rounded uppercase tracking-wider"
             >
-              {{ KIND_BADGE[snap.kind]?.label || snap.kind }}
+              {{ kindBadge(snap.kind).label }}
             </span>
             <span class="text-xs text-gray-500">{{ stageLabel(snap.stage) }}</span>
           </div>

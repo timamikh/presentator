@@ -21,6 +21,12 @@ import {
   ArcElement,
 } from 'chart.js'
 import client from '../api/client'
+import { fmtNum, fmtTimestamp as fmtTime, stageLabel } from '../utils/formatters'
+import {
+  buildByDayChartData,
+  buildByStageChartData,
+  STAGE_COLORS,
+} from '../utils/metricsChart'
 
 ChartJS.register(
   Title,
@@ -50,47 +56,7 @@ const byDay = ref([])
 const byModel = ref([])
 const recentCalls = ref([])
 
-const STAGE_LABELS = {
-  planning: 'Планирование',
-  design: 'Дизайн',
-  layout: 'Верстка',
-  refine_layout: 'Доработка',
-}
-
-function stageLabel(stage) {
-  return STAGE_LABELS[stage] || stage
-}
-
-function fmtNum(n) {
-  if (typeof n !== 'number') return '0'
-  return n.toLocaleString('ru-RU')
-}
-
-function fmtTime(value) {
-  if (!value) return ''
-  return new Date(value).toLocaleString('ru-RU', {
-    day: '2-digit',
-    month: 'short',
-    hour: '2-digit',
-    minute: '2-digit',
-  })
-}
-
-const byDayChartData = computed(() => ({
-  labels: byDay.value.map((r) => r.day),
-  datasets: [
-    {
-      label: 'Prompt',
-      data: byDay.value.map((r) => r.prompt_tokens),
-      backgroundColor: '#3b82f6',
-    },
-    {
-      label: 'Completion',
-      data: byDay.value.map((r) => r.completion_tokens),
-      backgroundColor: '#10b981',
-    },
-  ],
-}))
+const byDayChartData = computed(() => buildByDayChartData(byDay.value))
 
 const byDayChartOptions = {
   responsive: true,
@@ -109,26 +75,9 @@ const byDayChartOptions = {
   },
 }
 
-const STAGE_COLORS = {
-  planning: '#3b82f6',
-  design: '#a855f7',
-  layout: '#22c55e',
-  refine_layout: '#f59e0b',
-}
-
-const byStageChartData = computed(() => {
-  const rows = byStage.value
-  return {
-    labels: rows.map((r) => stageLabel(r.stage)),
-    datasets: [
-      {
-        data: rows.map((r) => r.total_tokens),
-        backgroundColor: rows.map((r) => STAGE_COLORS[r.stage] || '#9ca3af'),
-        borderWidth: 0,
-      },
-    ],
-  }
-})
+const byStageChartData = computed(() =>
+  buildByStageChartData(byStage.value, stageLabel, STAGE_COLORS),
+)
 
 const byStageChartOptions = {
   responsive: true,

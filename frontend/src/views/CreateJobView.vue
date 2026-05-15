@@ -12,6 +12,10 @@ import {
   defaultDesignBrief,
   aggregateDesignBrief,
 } from '../composables/useDesignBriefAggregator'
+import {
+  extractDraftAttachmentIds,
+  mergeDraftAttachments,
+} from '../composables/useDraftAttachments'
 
 const router = useRouter()
 const prompt = ref('')
@@ -133,7 +137,7 @@ function collectDraftPayload() {
   }
 }
 
-function applyDraft(draft) {
+async function applyDraft(draft) {
   prompt.value = draft.prompt || ''
   slideCount.value = Number(draft.slide_count) || 0
   slidePrompts.value = Array.isArray(draft.slide_prompts) ? draft.slide_prompts : []
@@ -141,10 +145,25 @@ function applyDraft(draft) {
   if (draft.design_input && typeof draft.design_input === 'object') {
     designBriefForm.value = { ...defaultDesignBrief(), ...draft.design_input }
   }
-  // Library attachments: backend stored {attachmentId, description}; we need
-  // full row info from the storage picker. We don't re-fetch here — user can
-  // re-select attachments after loading a draft. For now, drop them.
-  libraryAttachments.value = []
+  // Library attachments: drafts only persist { attachmentId, description }.
+  // Re-hydrate the full rows via the batch endpoint so the picker preview,
+  // ref labels and per-job descriptions all come back correctly. Attachments
+  // that have been deleted from the library since the draft was saved are
+  // silently dropped (mergeDraftAttachments handles this).
+  const ids = extractDraftAttachmentIds(draft.attachments)
+  if (ids.length === 0) {
+    libraryAttachments.value = []
+    return
+  }
+  try {
+    const { data } = await client.get('/attachments/by-ids', {
+      params: { ids: ids.join(',') },
+    })
+    libraryAttachments.value = mergeDraftAttachments(data, draft.attachments)
+  } catch (err) {
+    console.warn('Failed to restore draft attachments:', err.message)
+    libraryAttachments.value = []
+  }
 }
 
 async function handleSubmit() {

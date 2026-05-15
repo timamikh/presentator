@@ -15,6 +15,7 @@
 
 import { ref, onMounted } from 'vue'
 import client from '../api/client'
+import { fmtTimestamp as fmtDate, kindBadge } from '../utils/formatters'
 
 const props = defineProps({
   // Function passed by parent that returns the current form state object.
@@ -138,22 +139,6 @@ function newDraft() {
   showSaveForm.value = true
 }
 
-function fmtDate(value) {
-  if (!value) return ''
-  return new Date(value).toLocaleString('ru-RU', {
-    day: '2-digit',
-    month: 'short',
-    hour: '2-digit',
-    minute: '2-digit',
-  })
-}
-
-const KIND_BADGE = {
-  initial: { label: 'init', cls: 'bg-blue-100 text-blue-700' },
-  edit: { label: 'edit', cls: 'bg-gray-100 text-gray-700' },
-  restore: { label: 'restore', cls: 'bg-amber-100 text-amber-700' },
-}
-
 onMounted(fetchDrafts)
 </script>
 
@@ -246,10 +231,10 @@ onMounted(fetchDrafts)
             <span class="flex items-center gap-2 min-w-0">
               <span class="font-mono text-gray-500">v{{ v.version }}</span>
               <span
-                :class="KIND_BADGE[v.kind]?.cls || 'bg-gray-100 text-gray-700'"
+                :class="kindBadge(v.kind).cls"
                 class="inline-block text-[10px] font-medium px-1.5 py-0.5 rounded uppercase tracking-wider"
               >
-                {{ KIND_BADGE[v.kind]?.label || v.kind }}
+                {{ kindBadge(v.kind).label }}
               </span>
               <span class="text-[11px] text-gray-400">{{ fmtDate(v.created_at) }}</span>
             </span>
